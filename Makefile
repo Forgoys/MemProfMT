@@ -39,39 +39,33 @@ ARGS := -resource-dir=$(LLVM_HOME)/lib/clang/19
 # 源文件和目标文件
 SRCS := $(SRC_DIR)/CallGraph.cpp \
         $(SRC_DIR)/TimeInstrumentation.cpp \
-        $(SRC_DIR)/main.cpp
+        $(SRC_DIR)/main.cpp \
+        $(SRC_DIR)/FrontendAction.cpp \
+        $(SRC_DIR)/CommandLineOptions.cpp
 OBJS := $(SRCS:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 
 # 目标文件
-TARGET := $(BIN_DIR)/mt3000-inst
+TARGET := $(BIN_DIR)/MemProfMT
 
-.PHONY: all build clean install
+.PHONY: all clean
+.PRECIOUS: $(BUILD_DIR)/. $(BUILD_DIR)%/. $(BIN_DIR)/.
 
-all: build
+all: $(TARGET)
 
-build: $(TARGET)
-
-$(TARGET): $(OBJS) | $(BIN_DIR)
+$(TARGET): $(OBJS) | $(BIN_DIR)/.
 	$(CLANG) $(TOOL_CLANG_FLAGS) -o $@ $^ $(TOOL_LINK_FLAGS)
 
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)
-	@mkdir -p $(dir $@)
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)/.
 	$(CLANG) $(TOOL_CLANG_FLAGS) -c $< -o $@
 
-$(BIN_DIR) $(BUILD_DIR):
-	mkdir -p $@
-
-install: $(TARGET)
-	install -d $(DESTDIR)/usr/local/bin
-	install -m 755 $(TARGET) $(DESTDIR)/usr/local/bin
-	install -d $(DESTDIR)/usr/local/include/mt3000-inst
-	install -m 644 $(RUNTIME_DIR)/*.h $(DESTDIR)/usr/local/include/mt3000-inst
+%/.:
+	mkdir -p $(@D)
 
 clean:
 	rm -rf $(BUILD_DIR) $(BIN_DIR)
 
 # 运行目标程序
-run: build
+run: all
 	@echo "Running mt3000-inst..."
 	export LD_LIBRARY_PATH=$(LLVM_HOME)/lib:$$LD_LIBRARY_PATH; \
 	$(TARGET) $(ARGS) $(RUN_ARGS)

@@ -1,270 +1,333 @@
+// TimeInstrumentation.cpp
 #include "TimeInstrumentation.h"
 #include <sstream>
 #include <functional>
 #include <string>
-#include <cstdio>
+#include <clang/Lex/Lexer.h>
 
-namespace {
-    constexpr unsigned NUM_THREADS = 24;
-    constexpr double DEFAULT_TOTAL_TIME_THRESHOLD = 0.20;    // 20%
-    constexpr double DEFAULT_PARENT_TIME_THRESHOLD = 0.40;   // 40%
-
-    // 生成记录时间的全局数组声明
-    std::string generateTimeArrayDecl(const std::string& funcName) {
-        std::stringstream ss;
-        ss << "static unsigned long __time_" << funcName << "[" << NUM_THREADS << "] = {0};\n";
-        ss << "static unsigned long __count_" << funcName << "[" << NUM_THREADS << "] = {0};\n";
-        ss << "static unsigned long __call_time_" << funcName << "[" << NUM_THREADS << "] = {0};\n";
-        return ss.str();
-    }
-
-    // 生成获取函数总时间的代码
-    std::string generateGetTotalTimeFunc() {
-        std::stringstream ss;
-        ss << "static inline void __combine_thread_times(unsigned long time_array[" << NUM_THREADS << "], "
-           << "unsigned long call_array[" << NUM_THREADS << "], "
-           << "unsigned long count_array[" << NUM_THREADS << "], "
-           << "unsigned long* total_time, unsigned long* total_calls, double* avg_time) {\n"
-           << "    *total_time = 0;\n"
-           << "    *total_calls = 0;\n"
-           << "    for(int i = 0; i < " << NUM_THREADS << "; i++) {\n"
-           << "        *total_time += time_array[i];\n"
-           << "        *total_calls += count_array[i];\n"
-           << "    }\n"
-           << "    if (*total_calls > 0) {\n"
-           << "        *avg_time = (double)*total_time / *total_calls;\n"
-           << "    } else {\n"
-           << "        *avg_time = 0.0;\n"
-           << "    }\n"
-           << "}\n\n";
-        return ss.str();
-    }
-
-    // 生成等待同步的代码
-    std::string generateSynchronizationCode() {
-        std::stringstream ss;
-        ss << "static inline void __wait_for_threads() {\n"
-           << "    if (get_thread_id() == 0) {\n"
-           << "        const unsigned long start_wait = get_clk();\n"
-           << "        // 等待3秒\n"
-           << "        while ((get_clk() - start_wait) < (3UL * " << CLK_FREQ << ")) {}\n"
-           << "        hthread_printf(\"\\nProcessing timing results...\\n\");\n"
-           << "    }\n"
-           << "}\n\n";
-        return ss.str();
-    }
+// 判断根函数是否需要插桩
+bool TimeInstrumentationVisitor::shouldRootFuncInstrument(const clang::FunctionDecl *func) const
+{
+    // 如果这个函数只是一个声明
+    if (!func || !func->hasBody()) return false;
+    // 如果这个函数不在函数调用图中，不插桩
+    if (!callGraph.getNode(func->getNameAsString())) return false;
+    // 如果该函数为函数调用图中的叶子节点，即该函数再没有调用别的函数
+    if (callGraph.isLeafFunction(func->getNameAsString())) return false;
+    // 跳过系统头文件中的函数
+    if (rewriter.getSourceMgr().isInSystemHeader(func->getLocation())) return false;
+    // 跳过隐式生成的函数
+    if (func->isImplicit()) return false;
+    return true;
 }
 
-bool TimeInstrumentationVisitor::shouldInstrument(const clang::FunctionDecl* func) const {
-    if (!func->hasBody()) return false;
-    return true;  // 暂时默认所有函数都需要插桩
+// 判断调用函数是否需要插桩
+bool TimeInstrumentationVisitor::shouldCalleeFuncInstrument(const clang::FunctionDecl *callee) const
+{
+    // 如果这个函数只是一个声明
+    if (!callee || !callee->hasBody()) return false;
+    // 如果这个函数不在函数调用图中，不插桩
+    if (!callGraph.getNode(callee->getNameAsString())) return false;
+    // 跳过系统头文件中的函数
+    if (rewriter.getSourceMgr().isInSystemHeader(callee->getLocation())) return false;
+    // 跳过隐式生成的函数
+    if (callee->isImplicit()) return false;
+    return true;
 }
 
-void TimeInstrumentationVisitor::insertTimingCode(clang::FunctionDecl* func, bool isStart) {
-    std::string funcName = func->getNameAsString();
-    std::stringstream code;
+// 安全地在指定位置插入代码
+bool TimeInstrumentationVisitor::safelyInsertText(clang::SourceLocation loc, const std::string &text, bool insertAfter)
+{
+    if (loc.isInvalid()) return false;
 
-    if (isStart) {
-        code << "{\n"
-             << "    const unsigned tid = get_thread_id();\n"
-             << "    const unsigned long start_time = get_clk();\n";
-    } else {
-        code << "{\n"
-             << "    const unsigned tid = get_thread_id();\n"
-             << "    const unsigned long end_time = get_clk();\n"
-             << "    const unsigned long elapsed = end_time - start_time;\n"
-             << "    __time_" << funcName << "[tid] += elapsed;\n"
-             << "    __call_time_" << funcName << "[tid] = elapsed;\n"
-             << "    __count_" << funcName << "[tid]++;\n"
-             << "}\n";
-    }
-
-    if (isStart) {
-        auto loc = func->getBody()->getBeginLoc();
+    // 调整插入位置(如果是在某个位置之后插入)
+    if (insertAfter) {
         loc = loc.getLocWithOffset(1);
-        rewriter.InsertText(loc, code.str(), true, true);
-    } else {
-        auto loc = func->getBody()->getEndLoc();
-        loc = loc.getLocWithOffset(-1);
-        rewriter.InsertText(loc, code.str(), true, true);
     }
+
+    // 验证插入位置是否在主文件中
+    if (!rewriter.getSourceMgr().isWrittenInMainFile(loc)) return false;
+
+    // 执行插入操作
+    llvm::outs() << "\tInserting text at " << loc.printToString(rewriter.getSourceMgr()) << "\n";
+    return rewriter.InsertText(loc, text, /*InsertAfter=*/false, /*IndentNewLines=*/true);
 }
 
-void TimeInstrumentationVisitor::insertCallTimingCode(clang::CallExpr* call, bool isStart) {
-    if (const auto* callee = call->getDirectCallee()) {
-        if (!shouldInstrument(callee)) return;
+// 在文件开始处插入计时代码
+void TimeInstrumentationVisitor::insertFileEntryCode(clang::TranslationUnitDecl *TU)
+{
+    // TranslationUnitDecl 是一个特殊的 Decl，代表整个翻译单元的根节点。它的 SourceLocation 通常是无效的
+    llvm::outs() << "Instrumenting at the start of file:\n";
+    const std::string code = TimingCodeGenerator::generateTimeCalcCode(includes);
+    clang::SourceManager &SM = TU->getASTContext().getSourceManager();
 
+    // 获取主文件的 FileID
+    clang::FileID MainFileID = SM.getMainFileID();
+    if (MainFileID.isInvalid()) {
+        llvm::outs() << "Invalid main file ID\n";
+        return;
+    }
+
+    // 获取主文件的开始位置
+    clang::SourceLocation loc = SM.getLocForStartOfFile(MainFileID);
+    if (loc.isInvalid()) {
+        llvm::outs() << "Invalid location\n";
+        return;
+    }
+    safelyInsertText(loc, code);
+}
+
+// 在函数开始处插入计时代码
+void TimeInstrumentationVisitor::insertFunctionEntryCode(clang::FunctionDecl *func)
+{
+    llvm::outs() << "Instrumenting " + func->getNameAsString() + " at entry potion:\n";
+    const std::string entryCode = TimingCodeGenerator::generateFunctionEntryCode(
+        callGraph.getNode(func->getNameAsString()));
+
+    if (!func->getBody()) return;
+
+    clang::SourceLocation beginLoc = func->getBody()->getBeginLoc().getLocWithOffset(1); // '{' 的下一个位置
+    safelyInsertText(beginLoc, entryCode);
+}
+
+// 在return语句之前插入计时代码
+void TimeInstrumentationVisitor::insertReturnExitCode(clang::ReturnStmt *retStmt)
+{
+    if (!retStmt || !currentFunction) return;
+
+    // 使用 currentFunction 跟踪当前函数
+    if (!currentFunction) return;
+    llvm::outs() << "Instrumenting " + currentFunction->getNameAsString() + " before return:\n";
+
+    std::string funcName = currentFunction->getNameAsString();
+    std::string exitCode = TimingCodeGenerator::generateFunctionExitCode(funcName, callGraph.getNode(funcName));
+
+    clang::SourceLocation retLoc = retStmt->getBeginLoc();
+    safelyInsertText(retLoc, exitCode);
+}
+
+// 在函数调用前后插入计时代码
+void TimeInstrumentationVisitor::insertCallTimingCode(clang::CallExpr *call, bool isStart)
+{
+    llvm::outs() << "Instrumenting call" << (isStart ? "start: " : "end: ") << call->getDirectCallee()->
+            getNameAsString() << ":\n";
+    if (const auto *callee = call->getDirectCallee()) {
         std::string calleeName = callee->getNameAsString();
-        std::stringstream code;
+        clang::SourceLocation loc;
+        std::string code;
 
         if (isStart) {
-            code << "{\n"
-                 << "    const unsigned tid = get_thread_id();\n"
-                 << "    const unsigned long call_start = get_clk();\n";
+            // 在函数调用前插入代码
+            loc = findStartOfCallStatement(call);
+            code = TimingCodeGenerator::generateCallBeforeCode(calleeName);
         } else {
-            code << "{\n"
-                 << "    const unsigned tid = get_thread_id();\n"
-                 << "    const unsigned long call_end = get_clk();\n"
-                 << "    __time_" << calleeName << "[tid] += call_end - call_start;\n"
-                 << "}\n";
+            // 在函数调用后插入代码
+            loc = clang::Lexer::getLocForEndOfToken(
+                call->getEndLoc(), 0, rewriter.getSourceMgr(), rewriter.getLangOpts());
+            code = TimingCodeGenerator::generateCallAfterCode(calleeName);
         }
 
-        auto loc = isStart ? call->getBeginLoc() : call->getEndLoc();
-        rewriter.InsertText(loc, code.str(), true, true);
+        safelyInsertText(loc, code, /*insertAfter=*/!isStart);
     }
 }
 
-bool TimeInstrumentationVisitor::VisitFunctionDecl(clang::FunctionDecl* func) {
-    if (!shouldInstrument(func)) return true;
+// 重写 TraverseFunctionDecl 以跟踪当前函数
+bool TimeInstrumentationVisitor::TraverseFunctionDecl(clang::FunctionDecl *func)
+{
+    if (!shouldRootFuncInstrument(func)) {
+        return clang::RecursiveASTVisitor<TimeInstrumentationVisitor>::TraverseFunctionDecl(func);
+    }
+    llvm::outs() << "\n\n==========Traversing function: " << func->getNameAsString() << "===================\n\n";
 
     std::string funcName = func->getNameAsString();
     if (!alreadyDeclaredFuncs.count(funcName)) {
-        rewriter.InsertText(func->getBeginLoc(), generateTimeArrayDecl(funcName), true, true);
+        // 在函数前添加计时数组声明
+        std::string code = TimingCodeGenerator::generateArrayDecls(callGraph.getNode(funcName));
+        llvm::outs() << "Instrumenting before " + func->getNameAsString() + ":\n";
+        safelyInsertText(func->getBeginLoc(), code, false);
         alreadyDeclaredFuncs.insert(funcName);
     }
 
-    insertTimingCode(func, true);  // 函数开始
-    insertTimingCode(func, false); // 函数结束
+    // 跟踪当前函数
+    currentFunction = func;
 
+    // 在函数入口插入计时代码
+    insertFunctionEntryCode(func);
+
+    // 调用基类的默认遍历方法，继续递归遍历函数体，并触发自定义遍历类中重写的访问函数，进行插桩等逻辑
+    bool result = clang::RecursiveASTVisitor<TimeInstrumentationVisitor>::TraverseFunctionDecl(func);
+
+    // 重置当前函数
+    currentFunction = nullptr;
+
+    llvm::outs() << "\n==========Traversing function: " << func->getNameAsString() << "===================\n\n";
+    return result;
+}
+
+clang::SourceLocation TimeInstrumentationVisitor::findStartOfCallStatement(const clang::CallExpr *call) const
+{
+    // 首先获取调用表达式的初始位置
+    clang::SourceLocation loc = call->getBeginLoc();
+    if (!loc.isValid()) {
+        return loc;
+    }
+
+    // 获取源码管理器
+    const clang::SourceManager &SM = rewriter.getSourceMgr();
+
+    // 获取位置的详细信息
+    std::pair<clang::FileID, unsigned> locInfo = SM.getDecomposedLoc(loc);
+
+    // 文件大小检查
+    if (locInfo.second >= SM.getFileIDSize(locInfo.first)) {
+        return loc;
+    }
+
+    // 获取文件的文本缓冲区
+    bool invalidFlag = false;
+    const char *bufferStart = SM.getBufferData(locInfo.first, &invalidFlag).data();
+    if (invalidFlag || !bufferStart) {
+        return loc;
+    }
+
+    // 获取当前token的开始位置
+    const char *tokenStart = bufferStart + locInfo.second;
+    const char *originalStart = tokenStart;
+
+    // 向前查找语句的真正开始位置
+    while (tokenStart > bufferStart) {
+        // 如果遇到这些字符，说明找到了上一个语句的结束
+        if (*tokenStart == ';' || *tokenStart == '\n' || *tokenStart == '{' || *tokenStart == '}') {
+            tokenStart++;
+            // 跳过空白字符
+            while (tokenStart < originalStart &&
+                   (*tokenStart == ' ' || *tokenStart == '\t' || *tokenStart == '\n')) {
+                tokenStart++;
+            }
+            break;
+        }
+        tokenStart--;
+    }
+
+    // 返回新的源码位置
+    return SM.getLocForStartOfFile(locInfo.first).getLocWithOffset(tokenStart - bufferStart);
+}
+
+bool TimeInstrumentationVisitor::VisitTranslationUnitDecl(clang::TranslationUnitDecl *TU)
+{
+    insertFileEntryCode(TU);
     return true;
 }
 
-bool TimeInstrumentationVisitor::VisitCallExpr(clang::CallExpr* call) {
-    if (const auto* callee = call->getDirectCallee()) {
-        if (!shouldInstrument(callee)) return true;
+// 访问函数声明节点,插入计时代码
+bool TimeInstrumentationVisitor::VisitFunctionDecl(clang::FunctionDecl *func)
+{
+    // 已在 TraverseFunctionDecl 中处理
+    return true;
+}
 
-        insertCallTimingCode(call, true);
-        insertCallTimingCode(call, false);
+// 访问return语句,在其之前插入计时代码
+bool TimeInstrumentationVisitor::VisitReturnStmt(clang::ReturnStmt *retStmt)
+{
+    insertReturnExitCode(retStmt);
+    return true;
+}
+
+// 访问函数调用表达式,插入计时代码
+bool TimeInstrumentationVisitor::VisitCallExpr(clang::CallExpr *call)
+{
+    if (const auto *callee = call->getDirectCallee()) {
+        if (!shouldCalleeFuncInstrument(callee)) return true;
+
+        // 在函数调用前后添加计时代码
+        insertCallTimingCode(call, true); // 前
+        insertCallTimingCode(call, false); // 后
     }
     return true;
 }
 
-std::string TimeInstrumentationVisitor::generateResultProcessing() const {
+// 生成结果处理代码
+std::string TimeInstrumentationVisitor::generateResultProcessing() const
+{
     std::stringstream ss;
 
-    // 生成辅助函数
-    ss << generateGetTotalTimeFunc();
-    ss << generateSynchronizationCode();
+    // 1. 生成辅助函数
+    ss << TimingCodeGenerator::generateGetTotalTimeFunc();
+    ss << TimingCodeGenerator::generateSynchronizationCode();
 
-    // 生成结果处理函数
-    ss << "void __print_timing_results() {\n"
-       << "    __wait_for_threads();\n"
-       << "    if (get_thread_id() == 0) {\n"
-       << "        unsigned long total_program_time = 0;\n\n";
+    // 2. 生成结果处理函数头部
+    ss << TimingCodeGenerator::generateResultsHeader();
 
-    // 为每个函数生成时间统计变量
-    for (const auto& funcName : alreadyDeclaredFuncs) {
-        ss << "        unsigned long total_" << funcName << ", calls_" << funcName << ";\n"
-           << "        double avg_" << funcName << ";\n"
-           << "        __combine_thread_times(__time_" << funcName << ", __call_time_" << funcName
-           << ", __count_" << funcName << ", &total_" << funcName << ", &calls_" << funcName
-           << ", &avg_" << funcName << ");\n\n";
+    // 3. 合并各函数时间
+    auto rootFunctions = callGraph.getRootFunctions();
+    for (const auto &funcName: alreadyDeclaredFuncs) {
+        auto node = callGraph.getNode(funcName);
+        if (!node) continue;
 
-        if (callGraph.getRootFunctions().size() == 1 &&
-            callGraph.getRootFunctions()[0] == funcName) {
-            ss << "        total_program_time = total_" << funcName << ";\n";
-        }
+        bool isRoot = callGraph.isRootFunction(funcName);
+        ss << TimingCodeGenerator::generateTimeCombiningCode(funcName, node->getCallees(), isRoot);
     }
 
-    // 输出统计信息头部
-    ss << "\n        hthread_printf(\"\\n═══════════════════════════════════════════════\\n\");\n"
-       << "        hthread_printf(\"              Timing Analysis Report              \\n\");\n"
-       << "        hthread_printf(\"═══════════════════════════════════════════════\\n\\n\");\n"
-       << "        hthread_printf(\"Total Program Time: %.2f ms\\n\\n\", "
-       << "CYCLES_TO_MS((double)total_program_time));\n";
+    // 4. 生成报告头部
+    ss << TimingCodeGenerator::generateReportHeader();
 
-    // 层次化输出函数调用关系和时间统计
-    std::function<void(const std::string&, int, unsigned long)> printFuncStats;
-    printFuncStats = [&](const std::string& funcName, int level, unsigned long parentTime) {
-        ss << "        {\n"
-           << "            for(int i = 0; i < " << level << "; i++) "
-           << "hthread_printf(level == " << level << " ? \"├─ \" : \"│  \");\n"
-           << "            const double time_ms = CYCLES_TO_MS((double)total_" << funcName << ");\n"
-           << "            const double percent_total = total_program_time > 0 ? "
-           << "((double)total_" << funcName << " / total_program_time) * 100.0 : 0.0;\n"
-           << "            const double percent_parent = parentTime > 0 ? "
-           << "((double)total_" << funcName << " / parentTime) * 100.0 : 0.0;\n"
-           << "            const double avg_time_us = CYCLES_TO_US(avg_" << funcName << ");\n"
-           << "            hthread_printf(\"" << funcName << ":\\n\");\n"
-           << "            for(int i = 0; i < " << level << "; i++) hthread_printf(\"│  \");\n"
-           << "            hthread_printf(\"  Total: %.2f ms (%.1f%% of total\", "
-           << "time_ms, percent_total);\n"
-           << "            if(" << level << " > 0) hthread_printf(\", %.1f%% of parent\", "
-           << "percent_parent);\n"
-           << "            hthread_printf(\"\\n\");\n"
-           << "            for(int i = 0; i < " << level << "; i++) hthread_printf(\"│  \");\n"
-           << "            hthread_printf(\"  Calls: %lu (avg: %.2f µs/call)\\n\", "
-           << "calls_" << funcName << ", avg_time_us);\n"
-           << "        }\n\n";
-
-        // 递归处理被调用函数
+    // 5. 递归生成函数统计信息
+    std::function<void(const std::string &, int)> printFuncStats;
+    printFuncStats = [&](const std::string &funcName, int level) {
         auto node = callGraph.getNode(funcName);
-        if (node) {
-            auto callees = node->getCallees();
-            std::sort(callees.begin(), callees.end(),
-                     [](const auto& a, const auto& b) {
-                         return a->getName() < b->getName();
-                     });
+        if (!node) return;
 
-            for (const auto& callee : callees) {
-                if (alreadyDeclaredFuncs.count(callee->getName())) {
-                    ss << "            " << funcName << "_total = total_" << funcName << ";\n";
-                    printFuncStats(callee->getName(), level + 1, parentTime);
-                }
+        ss << TimingCodeGenerator::generateFunctionStats(funcName, level);
+
+        for (const auto &callee: node->getCallees()) {
+            if (alreadyDeclaredFuncs.count(callee->getName())) {
+                printFuncStats(callee->getName(), level + 1);
             }
         }
     };
 
-    // 从根函数开始打印
-    for (const auto& rootFunc : callGraph.getRootFunctions()) {
+    for (const auto &rootFunc: rootFunctions) {
         if (alreadyDeclaredFuncs.count(rootFunc)) {
-            printFuncStats(rootFunc, 0, 0);
+            printFuncStats(rootFunc, 0);
         }
     }
 
-    // 输出热点函数部分
-    ss << "\n        hthread_printf(\"\\n═══════════════════════════════════════════════\\n\");\n"
-       << "        hthread_printf(\"                  Hot Functions                  \\n\");\n"
-       << "        hthread_printf(\"═══════════════════════════════════════════════\\n\\n\");\n";
+    // 6. 生成热点函数分析
+    ss << TimingCodeGenerator::generateHotFunctionsHeader();
 
-    std::vector<std::pair<std::string, std::pair<double, double>>> hotFuncs;
-    for (const auto& funcName : alreadyDeclaredFuncs) {
-        if (funcName == callGraph.getRootFunctions()[0]) continue;
-
-        ss << "        {\n"
-           << "            double percent_total = ((double)total_" << funcName << " / total_program_time) * 100.0;\n";
-
-        for (const auto& caller : callGraph.getCallers(funcName)) {
-            if (alreadyDeclaredFuncs.count(caller)) {
-                ss << "            double percent_parent = ((double)total_" << funcName
-                   << " / total_" << caller << ") * 100.0;\n"
-                   << "            if (percent_total >= " << DEFAULT_TOTAL_TIME_THRESHOLD * 100.0
-                   << " && percent_parent >= " << DEFAULT_PARENT_TIME_THRESHOLD * 100.0 << ") {\n"
-                   << "                hotFuncs.emplace_back(\"" << funcName << "\", "
-                   << "std::make_pair(percent_total, percent_parent));\n"
-                   << "                break;\n"
-                   << "            }\n";
-            }
-        }
-        ss << "        }\n";
+    for (const auto &funcName: alreadyDeclaredFuncs) {
+        ss << TimingCodeGenerator::generateHotFunctionCheck(
+            funcName, callGraph.getCallers(funcName));
     }
 
-    ss << "    }\n"  // 结束tid==0的判断
-       << "}\n";     // 结束函数
+    // 7. 结束函数
+    ss << "    }\n"
+            << "}\n";
 
     return ss.str();
 }
 
-void TimeInstrumentationConsumer::HandleTranslationUnit(clang::ASTContext& Context) {
-    // 构建调用图
-    CallGraphBuilder graphBuilder(callGraph);
-    graphBuilder.TraverseDecl(Context.getTranslationUnitDecl());
+// 处理整个翻译单元
+void TimeInstrumentationConsumer::HandleTranslationUnit(clang::ASTContext &Context)
+{
+    // 获取 SourceManager
+    clang::SourceManager &SM = Context.getSourceManager();
 
-    // 创建访问器并遍历AST
-    TimeInstrumentationVisitor visitor(rewriter, callGraph);
+    // 获取文件入口（FileEntry）
+    const clang::FileEntry *FE = SM.getFileEntryForID(SM.getMainFileID());
+
+    // 首先构建调用图
+    CallGraphBuilder graphBuilder(callGraph, FE->tryGetRealPathName().str());
+    graphBuilder.TraverseDecl(Context.getTranslationUnitDecl());
+    callGraph.dump();
+
+    // 执行插桩操作
+    TimeInstrumentationVisitor visitor(rewriter, callGraph, Context, includes);
     visitor.TraverseDecl(Context.getTranslationUnitDecl());
 
-    // 在文件末尾添加时间统计处理代码
-    auto loc = rewriter.getSourceMgr().getLocForEndOfFile(rewriter.getSourceMgr().getMainFileID());
-    rewriter.InsertText(loc, visitor.generateResultProcessing(), true, true);
+    // 在文件末尾添加时间结果处理代码
+    auto endLoc = rewriter.getSourceMgr().getLocForEndOfFile(rewriter.getSourceMgr().getMainFileID());
+    if (endLoc.isValid()) {
+        rewriter.InsertText(endLoc, visitor.generateResultProcessing(), true, true);
+    }
 }
