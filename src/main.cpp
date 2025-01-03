@@ -43,7 +43,7 @@ int main(int argc, const char **argv) {
     } else {
         llvm::outs() << "Mode: Memory Access Instrumentation\n";
     }
-    llvm::outs() << "\n";
+    llvm::outs() << "======================================\n";
 
     // 运行工具
     return Tool.run(std::make_unique<InstrumentationFrontendActionFactory>().get());

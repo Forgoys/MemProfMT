@@ -1,11 +1,6 @@
 #ifndef TIME_PROFILER_H
 #define TIME_PROFILER_H
 
-// 时间单位换算宏（时钟频率为4150MHz）
-// #define CLK_FREQ 4150000000UL
-// #define CYCLES_TO_NS(cycles) ((cycles) * 1000000000UL / CLK_FREQ)
-// #define CYCLES_TO_US(cycles) ((cycles) * 1000000UL / CLK_FREQ)
-// #define CYCLES_TO_MS(cycles) ((cycles) * 1000UL / CLK_FREQ)
 #include <sstream>
 #include "CallGraph.h"
 
@@ -16,7 +11,6 @@ public:
     constexpr static unsigned NUM_THREADS = 24;
     constexpr static double DEFAULT_TOTAL_TIME_THRESHOLD = 20.0; // 20%
     constexpr static double DEFAULT_PARENT_TIME_THRESHOLD = 40.0; // 40%
-    // constexpr unsigned long CLK_FREQ = 4150000000UL;      // 已在宏定义中定义，移除
 
     // 组合根函数的全局记录变量
     static std::string combineRootTimeVarName(const std::string &funcName)
@@ -41,7 +35,7 @@ public:
     {
         std::stringstream ss;
         bool hasLimitHeaderFile = false;
-        for (const std::string &include: includes) {
+        for (const std::string &include : includes) {
             if (include == "limits.h") {
                 hasLimitHeaderFile = true;
                 break;
@@ -52,9 +46,9 @@ public:
         }
         // 时间单位换算宏（时钟频率为4150MHz）
         ss << "#define CLK_FREQ 4150000000UL\n"
-                << "#define CYCLES_TO_NS(cycles) ((cycles) * 1000000000UL / CLK_FREQ)\n"
-                << "#define CYCLES_TO_US(cycles) ((cycles) * 1000000UL / CLK_FREQ)\n"
-                << "#define CYCLES_TO_MS(cycles) ((cycles) * 1000UL / CLK_FREQ)\n";
+           << "#define CYCLES_TO_NS(cycles) ((cycles) * 1000000000UL / CLK_FREQ)\n"
+           << "#define CYCLES_TO_US(cycles) ((cycles) * 1000000UL / CLK_FREQ)\n"
+           << "#define CYCLES_TO_MS(cycles) ((cycles) * 1000UL / CLK_FREQ)\n";
         return ss.str();
     }
 
@@ -63,7 +57,7 @@ public:
     {
         std::vector<std::string> varNames = callGraphNode->getTimeVarName();
         std::stringstream ss;
-        for (const std::string &name: varNames) {
+        for (const std::string &name : varNames) {
             ss << "static unsigned long " << name << "[" << NUM_THREADS << "] = {0};\n";
         }
         return ss.str();
@@ -75,7 +69,7 @@ public:
         std::stringstream ss;
         ss << "\n\tint __tid = get_thread_id();\n";
         // 累计时间的临时变量
-        for (const auto &callee: callGraphNode->getCallees()) {
+        for (const auto &callee : callGraphNode->getCallees()) {
             ss << "\tunsigned long " << combineCalleeTimeVarTmpName(callee->getName()) << " = 0;\n";
         }
         ss << "\tunsigned long __start_time = get_clk();\n";
@@ -84,19 +78,27 @@ public:
 
     // 函数出口处的计时代码
     static std::string generateFunctionExitCode(const std::string &funcName,
-                                                const std::shared_ptr<CallGraphNode> &callGraphNode)
+                                              const std::shared_ptr<CallGraphNode> &callGraphNode)
     {
         std::stringstream ss;
-        ss << "\n";
-        // 根函数部分：
-        ss << "\tunsigned long __end_time = get_clk();\n"
-                << "\t__time_" + funcName + "[__tid] += __end_time - __start_time;\n";
+        ss << "\n\tunsigned long __end_time = get_clk();\n"
+           << "\tunsigned long __total_time = __end_time - __start_time;\n"
+           << "\t__time_" + funcName + "[__tid] += __total_time;\n\n"
+           << "\t// 调整父函数时间，减去子函数的时间\n"
+           << "\tunsigned long __children_time = 0;\n";
 
-        // 调用函数部分：把累计变量里的值记录回全局变量里
-        for (const auto &callee: callGraphNode->getCallees()) {
+        // 累加所有子函数的时间
+        for (const auto &callee : callGraphNode->getCallees()) {
             const std::string calleeName = callee->getName();
-            ss << "\t" << combineCalleeTimeVarName(funcName, calleeName) << "[__tid] = " <<
-                    combineCalleeTimeVarTmpName(calleeName) << ";\n";
+            ss << "\t" << combineCalleeTimeVarName(funcName, calleeName) << "[__tid] = "
+               << combineCalleeTimeVarTmpName(calleeName) << ";\n"
+               << "\t__children_time += " << combineCalleeTimeVarTmpName(calleeName) << ";\n";
+        }
+
+        // 调整当前函数的纯执行时间（不包括子函数时间）
+        if (!callGraphNode->getCallees().empty()) {
+            ss << "\n\t// 调整纯执行时间\n"
+               << "\t__time_" + funcName + "[__tid] -= __children_time;\n";
         }
 
         return ss.str();
@@ -105,15 +107,15 @@ public:
     // 函数调用前的计时函数
     static std::string generateCallBeforeCode(const std::string &calleeName)
     {
-        return "unsigned long __call_start_" + calleeName + " = get_clk();\n";
+        return "\tunsigned long __call_start_" + calleeName + " = get_clk();\n";
     }
 
     // 函数调用后的计时函数
     static std::string generateCallAfterCode(const std::string &calleeName)
     {
         std::stringstream ss;
-        ss << "\nunsigned long __call_end_" + calleeName + " = get_clk();\n"
-                << combineCalleeTimeVarTmpName(calleeName) + " += (__call_end_" + calleeName + " - __call_start_" +
+        ss << "\tunsigned long __call_end_" + calleeName + " = get_clk();\n"
+           << "\t" + combineCalleeTimeVarTmpName(calleeName) + " += (__call_end_" + calleeName + " - __call_start_" +
                 calleeName + ");\n";
         return ss.str();
     }
@@ -123,14 +125,14 @@ public:
     {
         std::stringstream ss;
         ss << "static inline void __combine_thread_times(unsigned long time_array[" << NUM_THREADS << "], "
-                << "unsigned long* total_time) {\n"
-                << "\t*total_time = ULONG_MAX;\n"
-                << "\tfor(int i = 0; i < " << NUM_THREADS << "; i++) {\n"
-                << "\t\tif (time_array[i] != 0) {\n"
-                << "\t\t\t*total_time = *total_time < time_array[i] ? *total_time : time_array[i];\n"
-                << "\t\t}\n"
-                << "\t}\n"
-                << "}\n\n";
+           << "unsigned long* total_time) {\n"
+           << "\t*total_time = 0;\n"
+           << "\tfor(int i = 0; i < " << NUM_THREADS << "; i++) {\n"
+           << "\t\tif (time_array[i] != 0) {\n"
+           << "\t\t\t*total_time = *total_time < time_array[i] ? time_array[i] : *total_time;\n"
+           << "\t\t}\n"
+           << "\t}\n"
+           << "}\n\n";
         return ss.str();
     }
 
@@ -139,13 +141,13 @@ public:
     {
         std::stringstream ss;
         ss << "static inline void __wait_for_threads() {\n"
-                << "    if (get_thread_id() == 0) {\n"
-                << "        const unsigned long start_wait = get_clk();\n"
-                << "        // 等待3秒\n"
-                << "        while ((get_clk() - start_wait) < (3UL * 4150000000UL)) {}\n"
-                << "        hthread_printf(\"\\nProcessing timing results...\\n\");\n"
-                << "    }\n"
-                << "}\n\n";
+           << "\tif (get_thread_id() == 0) {\n"
+           << "\t\tconst unsigned long start_wait = get_clk();\n"
+           << "\t\t// 等待3秒\n"
+           << "\t\twhile ((get_clk() - start_wait) < (3UL * CLK_FREQ)) {}\n"
+           << "\t\ththread_printf(\"\\nProcessing timing results...\\n\");\n"
+           << "\t}\n"
+           << "}\n\n";
         return ss.str();
     }
 
@@ -154,33 +156,32 @@ public:
     {
         std::stringstream ss;
         ss << "void __print_timing_results() {\n"
-                << "    __wait_for_threads();\n"
-                << "    if (get_thread_id() == 0) {\n"
-                << "        unsigned long total_program_time = 0;\n\n";
+           << "\t__wait_for_threads();\n"
+           << "\tif (get_thread_id() == 0) {\n"
+           << "\t\tunsigned long total_program_time = 0;\n\n";
         return ss.str();
     }
 
     // 生成时间合并代码
     static std::string generateTimeCombiningCode(const std::string &funcName,
-                                                 const std::vector<std::shared_ptr<CallGraphNode> > &callees,
-                                                 bool isRootFunction)
+        const std::vector<std::shared_ptr<CallGraphNode>> &callees, const bool isRootFunction)
     {
         std::stringstream ss;
         // 合并函数自身的执行时间
-        ss << "        unsigned long total_" << funcName << ";\n"
-                << "        __combine_thread_times(__time_" << funcName
-                << ", &total_" << funcName << ");\n";
+        ss << "\t\tunsigned long total_" << funcName << ";\n"
+           << "\t\t__combine_thread_times(__time_" << funcName
+           << ", &total_" << funcName << ");\n";
 
-        // 只有根函数的时间才计入总时间
+        // 如果是根函数，加入到总程序时间中
         if (isRootFunction) {
-            ss << "        total_program_time += total_" << funcName << ";\n";
+            ss << "\t\ttotal_program_time += total_" << funcName << ";\n";
         }
 
-        // 合并该函数调用其他函数的时间
-        for (const auto &callee: callees) {
-            ss << "        unsigned long total_" << funcName << "_" << callee->getName() << ";\n"
-                    << "        __combine_thread_times(__time_" << funcName << "_" << callee->getName()
-                    << ", &total_" << funcName << "_" << callee->getName() << ");\n";
+        // 合并所有被调用函数的时间
+        for (const auto &callee : callees) {
+            ss << "\t\tunsigned long total_" << funcName << "_" << callee->getName() << ";\n"
+               << "\t\t__combine_thread_times(__time_" << funcName << "_" << callee->getName()
+               << ", &total_" << funcName << "_" << callee->getName() << ");\n";
         }
         ss << "\n";
         return ss.str();
@@ -190,65 +191,177 @@ public:
     static std::string generateReportHeader()
     {
         std::stringstream ss;
-        ss << "\n        hthread_printf(\"\\n═══════════════════════════════════════════════\\n\");\n"
-                << "        hthread_printf(\"              Timing Analysis Report              \\n\");\n"
-                << "        hthread_printf(\"═══════════════════════════════════════════════\\n\\n\");\n"
-                << "        hthread_printf(\"Total Program Time: %.2f ms\\n\\n\", "
-                << "CYCLES_TO_MS((double)total_program_time));\n";
+        ss << "\t\ththread_printf(\"\\n═══════════════════════════════════════════════\\n\");\n"
+           << "\t\ththread_printf(\"              Timing Analysis Report              \\n\");\n"
+           << "\t\ththread_printf(\"═══════════════════════════════════════════════\\n\\n\");\n"
+           << "\t\ththread_printf(\"Total Program Time: %.2f ms\\n\\n\", "
+           << "CYCLES_TO_MS((double)total_program_time));\n";
         return ss.str();
     }
 
-    // 生成单个函数的统计信息
-    static std::string generateFunctionStats(const std::string &funcName, int level)
+    // 生成单个调用树的统计信息
+    // static std::string generateCallTreeStats(const std::string &rootFunc,
+    //         const CallGraph &callGraph, std::unordered_set<std::string> &processedFuncs)
+    // {
+    //     std::stringstream ss;
+    //     // 辅助函数：递归生成调用树
+    //     std::function<void(const std::string&, int, bool, const std::string&)> generateTree;
+    //     generateTree = [&](const std::string &funcName, int level, bool isLast, const std::string &parentName) {
+    //         auto node = callGraph.getNode(funcName);
+    //         if (!node) return;
+    //
+    //         // 记录处理过的函数，避免重复处理
+    //         if (processedFuncs.count(funcName) > 0) return;
+    //         processedFuncs.insert(funcName);
+    //
+    //         // 根函数直接显示名称
+    //         if (level == 0) {
+    //             ss << "\t\ththread_printf(\"" << funcName << "\\n\");\n";
+    //         } else {
+    //             // 非根函数显示树形结构和时间占比
+    //             ss << "\t\tfor (int i = 0; i < " << (level-1) << "; i++) "
+    //                << "hthread_printf(\"│   \");\n"
+    //                << "\t\ththread_printf(\"" << (isLast ? "└── " : "├── ") << "\");\n";
+    //
+    //             // 使用父函数对应的调用时间变量
+    //             const std::string timeVarName = "total_" + parentName + "_" + funcName;
+    //             ss << "\t\t{\n"
+    //                << "\t\t\tdouble percent = ((double)" << timeVarName << " / (double)total_"
+    //                << parentName << ") * 100.0;\n"
+    //                << "\t\t\ththread_printf(\"" << funcName << ": %.2f ms (%.1f%% of "
+    //                << parentName << ")\\n\", "
+    //                << "CYCLES_TO_MS((double)" << timeVarName << "), percent);\n"
+    //                << "\t\t}\n";
+    //         }
+    //
+    //         // 递归处理所有被调用的函数
+    //         const auto& callees = node->getCallees();
+    //         for (size_t i = 0; i < callees.size(); ++i) {
+    //             generateTree(callees[i]->getName(), level + 1, i == callees.size() - 1, funcName);
+    //         }
+    //     };
+    //
+    //     // 从根函数开始生成调用树
+    //     generateTree(rootFunc, 0, true, "");
+    //     ss << "\n";
+    //     return ss.str();
+    // }
+
+    static std::string generateCallTreeStats(const std::string &funcName, const CallGraph &callGraph)
     {
         std::stringstream ss;
-        // 打印缩进和函数名
-        ss << "        {\n"
-                << "            for(int i = 0; i < " << level << "; i++) hthread_printf(\"│  \");\n"
-                << "            hthread_printf(\"" << funcName << ":\\n\");\n"
-                << "            for(int i = 0; i < " << level << "; i++) hthread_printf(\"│  \");\n"
-                << "            hthread_printf(\"  Total: %.2f ms (%.1f%% of total)\\n\", "
-                << "CYCLES_TO_MS((double)total_" << funcName << "), "
-                << "total_program_time > 0 ? "
-                << "((double)total_" << funcName << " / ((double)total_program_time) * 100.0) : 0.0);\n"
-                << "        }\n";
+        ss << "\t\ththread_printf(\"" << funcName << "\\n\");\n";
+        const auto& callees = callGraph.getNode(funcName)->getCallees();
+
+        int count = 0;
+        for (const auto &callee : callees) {
+            count++;
+            std::string calleeName = callee->getName();
+            // 非根函数显示树形结构和时间占比
+            ss << "\t\ththread_printf(\"│   \");\n"
+               << "\t\ththread_printf(\"" << (count == callees.size() ? "└── " : "├── ") << "\");\n";
+
+            // 使用父函数对应的调用时间变量
+            const std::string timeVarName = "total_" + funcName + "_" + calleeName;
+            ss << "\t\t{\n"
+               << "\t\t\tdouble percent = ((double)" << timeVarName << " / (double)total_"
+               << funcName << ") * 100.0;\n"
+               << "\t\t\ththread_printf(\"" << calleeName << ": %.2f ms (%.1f%% of "
+               << funcName << ")\\n\", "
+               << "CYCLES_TO_MS((double)" << timeVarName << "), percent);\n"
+               << "\t\t}\n";
+        }
+        ss << "\n";
         return ss.str();
     }
 
-    // 生成热点函数分析的头部
-    static std::string generateHotFunctionsHeader()
+    // 生成热点函数分析
+    static std::string generateHotFunctionAnalysis(const CallGraph &callGraph,
+                                                 const std::unordered_set<std::string> &instrumentedFuncs)
     {
         std::stringstream ss;
-        ss << "        hthread_printf(\"\\n═══════════════════════════════════════════════\\n\");\n"
-                << "        hthread_printf(\"                  Hot Functions                  \\n\");\n"
-                << "        hthread_printf(\"═══════════════════════════════════════════════\\n\\n\");\n";
-        return ss.str();
-    }
+        ss << "\t\ththread_printf(\"\\n═══════════════════════════════════════════════\\n\");\n"
+           << "\t\ththread_printf(\"                  Hot Functions                  \\n\");\n"
+           << "\t\ththread_printf(\"═══════════════════════════════════════════════\\n\\n\");\n"
+           << "\t\ththread_printf(\"Functions that meet the following criteria:\\n\");\n"
+           << "\t\ththread_printf(\"1. Root functions: total time >= %.1f%% of program time\\n\", "
+           << DEFAULT_TOTAL_TIME_THRESHOLD << ");\n"
+           << "\t\ththread_printf(\"2. Called functions: time >= %.1f%% of caller time\\n\\n\", "
+           << DEFAULT_PARENT_TIME_THRESHOLD << ");\n";
 
-    // 生成热点函数检查代码
-    static std::string generateHotFunctionCheck(const std::string &funcName,
-                                                const std::vector<std::string> &callers)
-    {
-        std::stringstream ss;
-        ss << "        {\n"
-                << "            double percent_total = (double)total_" << funcName
-                << " / (double)total_program_time * 100.0;\n"
-                << "            double percent_parent = 0.0;\n";
+        // 辅助函数：递归检查热点函数
+        std::function<void(const std::string&, int, bool)> checkHotFunction;
+        checkHotFunction = [&](const std::string &funcName, int level, bool isLast) {
+            if (!instrumentedFuncs.count(funcName)) return;
 
-        if (!callers.empty()) {
-            for (const auto &caller: callers) {
-                ss << "            percent_parent += ((double)total_" << funcName
-                        << ") / ((double)total_" << caller << ") * 100.0;\n";
+            auto node = callGraph.getNode(funcName);
+            if (!node) return;
+
+            bool isRoot = callGraph.isRootFunction(funcName);
+            bool isHot = false;
+
+            ss << "\t\t{\n"
+               << "\t\t\tdouble func_time_percent = ((double)total_" << funcName
+               << " / (double)total_program_time) * 100.0;\n";
+
+            if (isRoot) {
+                // 根函数检查总体时间占比
+                ss << "\t\tif (func_time_percent >= " << DEFAULT_TOTAL_TIME_THRESHOLD << ") {\n";
+                isHot = true;
+            } else {
+                // 非根函数检查相对父函数的时间占比
+                const auto& callers = callGraph.getCallers(funcName);
+                if (!callers.empty()) {
+                    ss << "\t\t\tdouble parent_time_percent = 0.0;\n";
+                    for (const auto& caller : callers) {
+                        ss << "\t\t\tparent_time_percent += ((double)total_" << funcName
+                           << " / (double)total_" << caller << ") * 100.0;\n";
+                    }
+                    ss << "\t\t\tparent_time_percent /= " << callers.size() << ";\n"
+                       << "\t\t\tif (parent_time_percent >= " << DEFAULT_PARENT_TIME_THRESHOLD << ") {\n";
+                    isHot = true;
+                }
             }
-            ss << "            percent_parent /= " << callers.size() << ";\n";
+
+            if (isHot) {
+                // 生成树形分支和热点函数信息
+                if (level == 0) {
+                    ss << "\t\t\ththread_printf(\"" << funcName << "\\n\");\n";
+                } else {
+                    // 缩进处理
+                    ss << "\t\t\tfor (int i = 0; i < " << (level-1) << "; i++) "
+                       << "hthread_printf(\"│   \");\n"
+                       << "\t\t\ththread_printf(\"" << (isLast ? "└── " : "├── ") << "\");\n";
+                }
+
+                // 生成热点函数统计信息
+                ss << "\t\t\t{\n"
+                   << "\t\t\t\tdouble percent = " << (isRoot ?
+                        "((double)total_" + funcName + " / (double)total_program_time) * 100.0" :
+                        "parent_time_percent") << ";\n"
+                   << "\t\t\t\ththread_printf(\"" << funcName << ": %.2f ms (%.1f%% of "
+                   << (isRoot ? "total" : "parent") << ")\\n\", "
+                   << "CYCLES_TO_MS((double)total_" << funcName << "), percent);\n"
+                   << "\t\t\t}\n";
+
+                // 递归检查被调用的函数
+                const auto& callees = node->getCallees();
+                for (size_t i = 0; i < callees.size(); ++i) {
+                    checkHotFunction(callees[i]->getName(), level + 1, i == callees.size() - 1);
+                }
+
+                ss << "\t\t\t}\n";
+            }
+
+            ss << "\t\t}\n";
+        };
+
+        // 从根函数开始分析
+        auto rootFuncs = callGraph.getRootFunctions();
+        for (size_t i = 0; i < rootFuncs.size(); ++i) {
+            checkHotFunction(rootFuncs[i], 0, i == rootFuncs.size() - 1);
         }
 
-        ss << "            if (percent_total >= " << DEFAULT_TOTAL_TIME_THRESHOLD
-                << " && percent_parent >= " << DEFAULT_PARENT_TIME_THRESHOLD << ") {\n"
-                << "                hthread_printf(\"%s: %.1f%% of total, %.1f%% of parent\\n\", \""
-                << funcName << "\", percent_total, percent_parent);\n"
-                << "            }\n"
-                << "        }\n";
         return ss.str();
     }
 };

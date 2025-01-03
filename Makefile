@@ -39,9 +39,11 @@ ARGS := -resource-dir=$(LLVM_HOME)/lib/clang/19
 # 源文件和目标文件
 SRCS := $(SRC_DIR)/CallGraph.cpp \
         $(SRC_DIR)/TimeInstrumentation.cpp \
+        $(SRC_DIR)/MemoryInstrumentation.cpp \
         $(SRC_DIR)/main.cpp \
         $(SRC_DIR)/FrontendAction.cpp \
-        $(SRC_DIR)/CommandLineOptions.cpp
+        $(SRC_DIR)/CommandLineOptions.cpp \
+        $(SRC_DIR)/MemoryProfiler.cpp
 OBJS := $(SRCS:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 
 # 目标文件

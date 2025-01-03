@@ -6,16 +6,22 @@
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Tooling.h"
 #include "../include/FrontendAction.h"
+
+#include <MemoryInstrumentation.h>
+
 #include "../include/CommandLineOptions.h"
 #include "../include/TimeInstrumentation.h"
+#include "../include/MemoryInstrumentation.h"
 
 std::unique_ptr<clang::ASTConsumer> InstrumentationFrontendAction::CreateASTConsumer(
         clang::CompilerInstance &CI, llvm::StringRef file) {
     rewriter.setSourceMgr(CI.getSourceManager(), CI.getLangOpts());
     if (EnableTimeInst) {
         return std::make_unique<TimeInstrumentationConsumer>(rewriter, includes);
+    } else if (EnableMemoryInst) {
+        return std::make_unique<MemoryInstrumentationConsumer>(rewriter);
     }
-    llvm::errs() << "Error: Memory instrumentation not implemented yet.\n";
+    llvm::errs() << "Error: No instrumentation type selected.\n";
     return nullptr;
 }
 

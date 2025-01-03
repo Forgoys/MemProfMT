@@ -75,10 +75,13 @@ public:
     // 返回调用图中的根节点，即没有其他函数调用它们的函数。这些函数没有出现在任何其他函数的反向边中
     std::vector<std::string> getRootFunctions() const;
 
+    std::vector<std::string> getAllFunctionName() const;
+
     // 判断给定函数是否为叶子函数，即没有被其他函数调用
     bool isLeafFunction(const std::string& name) const;
     // 判断给定函数是否为根函数
     bool isRootFunction(const std::string& name) const;
+    // 获取调用某函数的所有函数
     std::vector<std::string> getCallers(const std::string& name) const;
     void clear();
 

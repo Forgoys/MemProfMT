@@ -258,51 +258,36 @@ std::string TimeInstrumentationVisitor::generateResultProcessing() const
     // 2. 生成结果处理函数头部
     ss << TimingCodeGenerator::generateResultsHeader();
 
-    // 3. 合并各函数时间
-    auto rootFunctions = callGraph.getRootFunctions();
-    for (const auto &funcName: alreadyDeclaredFuncs) {
+    // 3. 为所有已插桩函数生成时间合并代码
+    for (const auto &funcName : callGraph.getAllFunctionName()) {
         auto node = callGraph.getNode(funcName);
-        if (!node) continue;
+        if (!node || callGraph.isLeafFunction(funcName)) continue;
 
-        bool isRoot = callGraph.isRootFunction(funcName);
-        ss << TimingCodeGenerator::generateTimeCombiningCode(funcName, node->getCallees(), isRoot);
+        ss << TimingCodeGenerator::generateTimeCombiningCode(funcName, node->getCallees(), callGraph.isRootFunction(funcName));
     }
 
     // 4. 生成报告头部
     ss << TimingCodeGenerator::generateReportHeader();
 
-    // 5. 递归生成函数统计信息
-    std::function<void(const std::string &, int)> printFuncStats;
-    printFuncStats = [&](const std::string &funcName, int level) {
-        auto node = callGraph.getNode(funcName);
-        if (!node) return;
+    // 5. 打印函数调用树
+    // 使用集合跟踪已处理的函数，避免重复打印
+    // std::unordered_set<std::string> processedFuncs;
 
-        ss << TimingCodeGenerator::generateFunctionStats(funcName, level);
-
-        for (const auto &callee: node->getCallees()) {
-            if (alreadyDeclaredFuncs.count(callee->getName())) {
-                printFuncStats(callee->getName(), level + 1);
-            }
-        }
-    };
-
-    for (const auto &rootFunc: rootFunctions) {
-        if (alreadyDeclaredFuncs.count(rootFunc)) {
-            printFuncStats(rootFunc, 0);
+    // 获取所有根函数，按调用关系打印函数树
+    // const auto rootFunctions = callGraph.getRootFunctions();
+    const auto funcName = callGraph.getAllFunctionName();
+    for (const auto &rootFunc : funcName) {
+        if (!callGraph.isLeafFunction(rootFunc)) {
+            ss << TimingCodeGenerator::generateCallTreeStats(rootFunc, callGraph);
         }
     }
 
     // 6. 生成热点函数分析
-    ss << TimingCodeGenerator::generateHotFunctionsHeader();
-
-    for (const auto &funcName: alreadyDeclaredFuncs) {
-        ss << TimingCodeGenerator::generateHotFunctionCheck(
-            funcName, callGraph.getCallers(funcName));
-    }
+    ss << TimingCodeGenerator::generateHotFunctionAnalysis(callGraph, alreadyDeclaredFuncs);
 
     // 7. 结束函数
-    ss << "    }\n"
-            << "}\n";
+    ss << "\t}\n"
+       << "}\n";
 
     return ss.str();
 }
