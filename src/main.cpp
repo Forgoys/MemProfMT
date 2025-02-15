@@ -42,6 +42,14 @@ int main(int argc, const char **argv) {
         llvm::outs() << "  - Parent Time Threshold: " << ParentTimeThreshold << "%\n";
     } else {
         llvm::outs() << "Mode: Memory Access Instrumentation\n";
+        if (!TargetFunctions.empty()) {
+            llvm::outs() << "Target Functions:\n";
+            for (const auto& func : TargetFunctions) {
+                llvm::outs() << "  - " << func << "\n";
+            }
+        } else {
+            llvm::outs() << "Target: All Functions\n";
+        }
     }
     llvm::outs() << "======================================\n";
 

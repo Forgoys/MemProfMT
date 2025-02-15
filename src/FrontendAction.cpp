@@ -16,11 +16,24 @@
 std::unique_ptr<clang::ASTConsumer> InstrumentationFrontendAction::CreateASTConsumer(
         clang::CompilerInstance &CI, llvm::StringRef file) {
     rewriter.setSourceMgr(CI.getSourceManager(), CI.getLangOpts());
+
+    // 获取目标函数列表
+    std::vector<std::string> targetFuncs(TargetFunctions.begin(), TargetFunctions.end());
+
+    // 如果指定了目标函数，打印相关信息
+    if (!targetFuncs.empty()) {
+        llvm::outs() << "Target functions for instrumentation:\n";
+        for (const auto& func : targetFuncs) {
+            llvm::outs() << "  - " << func << "\n";
+        }
+    }
+
     if (EnableTimeInst) {
         return std::make_unique<TimeInstrumentationConsumer>(rewriter, includes);
     } else if (EnableMemoryInst) {
-        return std::make_unique<MemoryInstrumentationConsumer>(rewriter);
+        return std::make_unique<MemoryInstrumentationConsumer>(rewriter, includes, targetFuncs);
     }
+
     llvm::errs() << "Error: No instrumentation type selected.\n";
     return nullptr;
 }

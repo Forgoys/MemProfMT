@@ -6,59 +6,129 @@
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Rewrite/Core/Rewriter.h"
+#include "clang/Lex/Lexer.h"
+#include "../runtime/MemoryProfiler.h"
+#include "CallGraph.h"
 #include <unordered_set>
-#include <string>
+#include <clang/AST/ParentMap.h>
 
-// AST访问器,用于遍历和插入内存访问分析代码
-class MemoryInstrumentationVisitor : public clang::RecursiveASTVisitor<MemoryInstrumentationVisitor> {
+class MemoryInstrumentationVisitor; // 前向声明
+
+// AST访问器，用于遍历和插入内存访问监控代码
+class MemoryInstrumentationVisitor
+        : public clang::RecursiveASTVisitor<MemoryInstrumentationVisitor>
+{
 public:
-    explicit MemoryInstrumentationVisitor(clang::Rewriter &R, clang::ASTContext &Context)
-        : rewriter(R), context(Context) {}
+    friend class clang::RecursiveASTVisitor<MemoryInstrumentationVisitor>;
 
-    // 访问到数组声明时触发
-    bool VisitArrayType(clang::ArrayType *arrayType);
+    explicit MemoryInstrumentationVisitor(clang::Rewriter &R,
+                                          clang::ASTContext &Context,
+                                          std::vector<std::string> &includes,
+                                          const std::vector<std::string> targetFuncs)
+        : rewriter(R), ctx(Context), includes(includes),
+          targetFunctions(),
+          currentFunctionName("")
+    {
+        for (const auto& func : targetFuncs) {
+            if (!func.empty()) {
+                targetFunctions.insert(func);
+            }
+        }
+    }
 
-    // 访问变量声明时触发
-    bool VisitVarDecl(clang::VarDecl *varDecl);
+    // 控制遍历行为
+    bool shouldVisitTemplateInstantiations() const { return false; }
+    bool shouldVisitImplicitCode() const { return false; }
 
-    // 访问数组或指针访问表达式时触发
-    bool VisitArraySubscriptExpr(clang::ArraySubscriptExpr *arrayExpr);
-    bool VisitMemberExpr(clang::MemberExpr *memberExpr);
-    bool VisitUnaryOperator(clang::UnaryOperator *unaryOp);
+    // 访问翻译单元，插入内存分析器的定义
+    bool VisitTranslationUnitDecl(clang::TranslationUnitDecl *TU);
 
-    // 访问函数声明时触发
-    bool VisitFunctionDecl(clang::FunctionDecl *funcDecl);
+    // 访问函数声明，记录当前函数名
+    bool VisitFunctionDecl(clang::FunctionDecl *FD);
+
+    // 访问变量声明，对数组和指针类型变量进行初始化
+    bool VisitVarDecl(clang::VarDecl *VD);
+
+    // 访问数组下标表达式，记录数组访问
+    bool VisitArraySubscriptExpr(clang::ArraySubscriptExpr *ASE) const;
+
+    // 访问一元运算符，处理指针解引用
+    bool VisitUnaryOperator(clang::UnaryOperator *UO);
+
+    // 访问结构体成员表达式，记录成员访问
+    bool VisitMemberExpr(clang::MemberExpr *ME) const;
+
+    bool TraverseFunctionDecl(clang::FunctionDecl *FD);
+
+    // 访问返回语句，插入内存分析代码
+    bool VisitReturnStmt(clang::ReturnStmt* RS);
+
+    // 获取所有函数中已初始化的变量
+    const std::unordered_map<std::string, std::unordered_set<std::string>>& getInitializedVars() const {
+        return functionInitializedVars;
+    }
 
 private:
     clang::Rewriter &rewriter;
-    clang::ASTContext &context;
+    clang::ASTContext &ctx;
+    std::vector<std::string> &includes;
     std::unordered_set<std::string> instrumentedVars;
+    std::unordered_set<std::string> targetFunctions; // 目标函数集合
+    std::string currentFunctionName; // 当前正在访问的函数名
+    std::unordered_map<std::string, std::vector<std::string>> functionVars; // Track variables per function
+    std::unordered_map<std::string, std::unordered_set<std::string>> functionInitializedVars; // Track initialized variables per function
 
-    // 在变量声明处插入初始化代码
-    void insertInitialization(clang::VarDecl *varDecl);
+    // 获取表达式的源代码
+    std::string getSourceText(const clang::Stmt *stmt) const;
 
-    // 在内存访问处插入记录代码
-    void insertAccessRecord(clang::Expr *expr, const std::string &varName);
+    // 判断变量是否需要进行内存访问分析
+    bool shouldInstrumentVar(const clang::VarDecl *VD) const;
 
-    // 在函数结尾处插入统计代码
-    void insertStatistics(clang::FunctionDecl *funcDecl);
+    // 判断当前函数是否需要插桩
+    bool shouldInstrumentFunction() const;
 
-    // 辅助方法：安全插入代码
-    bool safelyInsertText(clang::SourceLocation loc, const std::string &text, bool insertAfter = false);
+    // 为变量插入内存分析器的初始化代码
+    void insertVarProfiler(const clang::VarDecl *VD);
 
-    // 辅助方法：获取表达式的完整源代码
-    std::string getExprAsString(const clang::Expr *expr);
+    // 处理函数参数中的数组初始化, 遍历函数的所有参数，并调用 insertVarProfiler 处理数组类型的参数
+    void insertFuncParamProfiler(const clang::FunctionDecl *FD);
+
+    // 插入内存访问记录代码
+    bool insertAccessProfiler(const clang::Expr *E) const;
+
+    // 检查代码位置是否在主文件中
+    bool isInMainFile(clang::SourceLocation Loc) const;
+
+    void insertAnalysisCode(clang::ReturnStmt* RS);
+
+    // 访问数组下标表达式，记录数组访问
+    bool handleArraySubscriptExpr(const clang::ArraySubscriptExpr *ASE) const;
+
+    // 访问一元运算符，处理指针解引用
+    bool handleUnaryOperator(const clang::UnaryOperator *UO) const;
+
+    unsigned getIndentation(clang::SourceLocation Loc) const;
+
+    std::string getLine(clang::SourceLocation Loc) const;
+
+    std::string generateAnalysisCode(const std::string& functionName);
 };
 
-// AST消费者类,用于处理整个翻译单元
+// AST消费者类，用于处理整个翻译单元
 class MemoryInstrumentationConsumer : public clang::ASTConsumer {
-public:
-    explicit MemoryInstrumentationConsumer(clang::Rewriter &R) : rewriter(R) {}
-
-    void HandleTranslationUnit(clang::ASTContext &Context) override;
-
 private:
+    const std::vector<std::string> targetFunctions;
     clang::Rewriter &rewriter;
+    std::vector<std::string> &includes;
+
+public:
+    explicit MemoryInstrumentationConsumer(clang::Rewriter &R,
+                                         std::vector<std::string> &includes,
+                                         const std::vector<std::string> &targetFuncs)
+        : targetFunctions(targetFuncs),
+          rewriter(R), includes(includes) {}
+    
+    void HandleTranslationUnit(clang::ASTContext &Context) override;
 };
 
 #endif // MEMORY_INSTRUMENTATION_H

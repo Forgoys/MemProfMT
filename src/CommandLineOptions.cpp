@@ -42,3 +42,10 @@ cl::opt<std::string> OutputFilename(
     cl::desc("Specify output filename"),
     cl::value_desc("filename"),
     cl::cat(ToolCategory));
+
+cl::list<std::string> TargetFunctions(
+    "target-funcs",
+    cl::desc("Specify target functions to instrument"),
+    cl::value_desc("function_name"),
+    cl::CommaSeparated,
+    cl::cat(ToolCategory));

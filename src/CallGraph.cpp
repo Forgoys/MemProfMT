@@ -32,7 +32,19 @@ std::shared_ptr<CallGraphNode> CallGraph::getNode(const std::string &name) const
     return (it != nodes.end()) ? it->second : nullptr;
 }
 
-// 获取所有根节点
+/**
+ * 返回调用图中的所有根函数
+ * 
+ * 根据CallGraph的设计，根函数是指在调用图中没有任何调用者(caller)的函数。
+ * 判断一个函数是否为根函数的条件为:
+ * 1. 该函数在callers反向边集合中不存在，表示从未被任何函数调用过
+ * 2. 或者该函数在callers中存在但其调用者集合为空
+ * 
+ * 例如在一个C程序中，main()函数通常就是一个根函数，因为它是程序的入口点，
+ * 不会被其他函数调用。
+ * 
+ * @return 包含所有根函数名称的vector
+ */
 std::vector<std::string> CallGraph::getRootFunctions() const
 {
     std::vector<std::string> roots;
@@ -160,7 +172,9 @@ bool CallGraphBuilder::VisitFunctionDecl(const clang::FunctionDecl *func)
     }
 
     // 检查是否在主源文件中
-    if (func->getASTContext().getSourceManager().getFilename(func->getLocation()) != sourceFile) {
+    auto &SM = func->getASTContext().getSourceManager();
+    auto fileEntry = SM.getFileEntryForID(SM.getFileID(func->getLocation()));
+    if (!fileEntry || fileEntry->tryGetRealPathName() != sourceFile) {
         return true;
     }
 
@@ -183,9 +197,27 @@ bool CallGraphBuilder::VisitCallExpr(clang::CallExpr *call)
     }
 
     if (const auto *callee = call->getDirectCallee()) {
+        // 跳过系统函数
+        clang::SourceManager& SM = callee->getASTContext().getSourceManager();
+        if (SM.isInSystemHeader(callee->getLocation())) {
+            return true;
+        }
+
+        // 获取被调用函数的位置信息
+        clang::SourceLocation callLoc = callee->getLocation();
+        if (!callLoc.isValid()) {
+            return true;
+        }
+
+        // 确保被调用函数在当前源文件中
+        if (SM.getFilename(callLoc) != sourceFile) {
+            return true;
+        }
+        
         std::string calleeName = callee->getNameInfo().getName().getAsString();
         if (!calleeName.empty()) {
             graph.addEdge(currentFunction, calleeName);
+        } else {
         }
     }
     return true;

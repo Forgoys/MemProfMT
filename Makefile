@@ -42,8 +42,7 @@ SRCS := $(SRC_DIR)/CallGraph.cpp \
         $(SRC_DIR)/MemoryInstrumentation.cpp \
         $(SRC_DIR)/main.cpp \
         $(SRC_DIR)/FrontendAction.cpp \
-        $(SRC_DIR)/CommandLineOptions.cpp \
-        $(SRC_DIR)/MemoryProfiler.cpp
+        $(SRC_DIR)/CommandLineOptions.cpp
 OBJS := $(SRCS:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 
 # 目标文件
