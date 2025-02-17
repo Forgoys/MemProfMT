@@ -2,9 +2,8 @@
 
 A powerful source code instrumentation tool designed for MT3000 processors, enabling detailed performance analysis through time profiling and memory access pattern detection.
 
-[English](#english) | [中文](#chinese)
+[English](README.md) | [中文](README_zh.md)
 
-<a name="english"></a>
 ## Features
 
 - **Time Instrumentation**: Analyzes execution time at function granularity
