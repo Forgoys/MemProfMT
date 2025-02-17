@@ -178,6 +178,7 @@ std::string MemoryInstrumentationVisitor::generateAnalysisCode(const std::string
     auto& initializedVars = functionInitializedVars[functionName];
     for (const auto& var : initializedVars) {
         analysisCode << "__mem_analyze(&__" << var << "_prof);\n";
+        analysisCode << "__mem_print_analysis(&__" << var << "_prof);\n";
     }
     
     return analysisCode.str();

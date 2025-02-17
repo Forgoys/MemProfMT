@@ -45,29 +45,48 @@ bool InstrumentationFrontendAction::BeginSourceFileAction(clang::CompilerInstanc
 }
 
 void InstrumentationFrontendAction::EndSourceFileAction() {
+    // 获取主文件ID
     const auto &ID = rewriter.getSourceMgr().getMainFileID();
     std::string outputName;
 
     if (!OutputFilename.empty()) {
+        // 如果用户通过-o选项指定了输出文件名，直接使用
         outputName = OutputFilename;
     } else {
-        auto inputPath = llvm::sys::path::filename(
-            rewriter.getSourceMgr().getFilename(rewriter.getSourceMgr().getLocForStartOfFile(ID)));
-        outputName = "instrumented_" + inputPath.str();
+        // 获取输入文件的完整路径
+        llvm::StringRef inputFullPath = rewriter.getSourceMgr().getFilename(
+            rewriter.getSourceMgr().getLocForStartOfFile(ID));
+        
+        // 分别获取目录路径和文件名
+        llvm::SmallString<128> directory(llvm::sys::path::parent_path(inputFullPath));
+        llvm::StringRef filename = llvm::sys::path::filename(inputFullPath);
+        
+        // 根据插桩类型选择合适的前缀
+        // EnableTimeInst 在 CommandLineOptions.h 中定义
+        std::string prefix = EnableTimeInst ? "time_prof_" : "mem_prof_";
+        
+        // 组合目录路径、前缀和文件名，构造完整的输出路径
+        llvm::SmallString<128> outputPath(directory);
+        llvm::sys::path::append(outputPath, prefix + filename.str());
+        
+        outputName = outputPath.str().str();
     }
 
+    // 创建输出文件
     std::error_code EC;
     llvm::raw_fd_ostream outFile(outputName, EC, llvm::sys::fs::OF_None);
 
+    // 检查文件创建是否成功
     if (EC) {
-        llvm::errs() << "Error: Could not create output file " << outputName
-                    << ": " << EC.message() << "\n";
+        llvm::errs() << "Error: Could not create output file " << outputName 
+                     << ": " << EC.message() << "\n";
         return;
     }
 
-    // 获取重写后的代码
+    // 获取重写后的代码缓冲区
     const clang::RewriteBuffer *RewriteBuf = rewriter.getRewriteBufferFor(ID);
     if (RewriteBuf) {
+        // 将重写后的代码写入文件
         outFile << std::string(RewriteBuf->begin(), RewriteBuf->end());
         llvm::outs() << "Successfully generated instrumented file: " << outputName << "\n";
     } else {

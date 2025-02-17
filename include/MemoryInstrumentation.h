@@ -58,6 +58,8 @@ public:
     // 访问结构体成员表达式，记录成员访问
     bool VisitMemberExpr(clang::MemberExpr *ME) const;
 
+    // 遍历函数声明，保存当前函数上下文，清空当前函数的变量列表，
+    // 遍历完成后恢复之前的函数上下文
     bool TraverseFunctionDecl(clang::FunctionDecl *FD);
 
     // 访问返回语句，插入内存分析代码
