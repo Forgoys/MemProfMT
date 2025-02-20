@@ -3,8 +3,13 @@
 NPROCS = $(shell nproc || sysctl -n hw.ncpu || echo 2)
 MAKEFLAGS += -j$(NPROCS)
 
-# 设置本地 LLVM 和 Clang 的路径
-LLVM_HOME := /opt/homebrew/opt/llvm
+# 根据操作系统设置LLVM路径
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+    LLVM_HOME := /usr/lib/llvm-19
+else
+    LLVM_HOME := /opt/homebrew/opt/llvm
+endif
 
 # 使用本地的 clang++
 CLANG := $(LLVM_HOME)/bin/clang++
@@ -32,9 +37,6 @@ BIN_DIR := bin
 # 合并所有编译选项
 TOOL_CLANG_FLAGS := $(CLANG_FLAGS) $(LLVM_CXXFLAGS) -I$(CLANG_INCLUDEDIR) -I$(INC_DIR)
 TOOL_LINK_FLAGS := -L$(LLVM_HOME)/lib -Wl,-rpath,$(LLVM_HOME)/lib $(LLVM_LDFLAGS) $(LLVM_LIBS) $(CLANG_LIBS) $(LLVM_SYSTEM_LIBS)
-
-# 在运行时指定资源目录
-ARGS := -resource-dir=$(LLVM_HOME)/lib/clang/19
 
 # 源文件和目标文件
 SRCS := $(SRC_DIR)/CallGraph.cpp \
@@ -64,9 +66,3 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)/.
 
 clean:
 	rm -rf $(BUILD_DIR) $(BIN_DIR)
-
-# 运行目标程序
-run: all
-	@echo "Running mt3000-inst..."
-	export LD_LIBRARY_PATH=$(LLVM_HOME)/lib:$$LD_LIBRARY_PATH; \
-	$(TARGET) $(ARGS) $(RUN_ARGS)

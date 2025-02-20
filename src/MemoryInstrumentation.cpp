@@ -8,14 +8,64 @@
 #include "clang/AST/ParentMapContext.h"
 #include "clang/AST/Expr.h"
 
+#include "clang/Lex/Preprocessor.h"
+#include "clang/Lex/PPCallbacks.h"
+#include "clang/Lex/MacroInfo.h"
+#include "clang/Lex/Token.h"
+#include "clang/Basic/FileManager.h"
+#include "clang/Basic/SourceLocation.h"
+#include "clang/Lex/Lexer.h"
+
 bool MemoryInstrumentationVisitor::VisitTranslationUnitDecl(clang::TranslationUnitDecl *TU) {
-    llvm::outs() << "Inserting memory profiler definitions at file start\n";
-    auto InsertLoc = rewriter.getSourceMgr().getLocForStartOfFile(
-        rewriter.getSourceMgr().getMainFileID());
-    if (InsertLoc.isValid()) {
-        rewriter.InsertText(InsertLoc,
-            MemoryCodeGenerator::generateCompleteProfiler(includes));
+    llvm::outs() << "Finding appropriate location to insert memory profiler definitions\n";
+    
+    const clang::SourceManager &SM = rewriter.getSourceMgr();
+    clang::FileID MainFileID = SM.getMainFileID();
+    
+    // 获取文件内容
+    bool Invalid = false;
+    const llvm::StringRef FileContent = SM.getBufferData(MainFileID, &Invalid);
+    if (Invalid) {
+        llvm::errs() << "Error: Could not read main file content\n";
+        return true;
     }
+    
+    // 在文件内容中查找最后一个 #include 或 #define
+    size_t LastPreprocessorLine = 0;
+    llvm::StringRef Content = FileContent;
+    size_t Pos = 0;
+    
+    while (true) {
+        // 查找下一个换行符
+        size_t NextNewline = Content.find('\n', Pos);
+        if (NextNewline == llvm::StringRef::npos) break;
+        
+        // 获取当前行
+        llvm::StringRef Line = Content.slice(Pos, NextNewline).trim();
+        
+        // 检查行是否以 #include 或 #define 开始
+        if (Line.starts_with("#include") || Line.starts_with("#define")) {
+            LastPreprocessorLine = NextNewline + 1;
+        }
+        
+        Pos = NextNewline + 1;
+        if (Pos >= Content.size()) break;
+    }
+    
+    // 如果找到了预处理指令，在其后插入代码
+    if (LastPreprocessorLine > 0) {
+        clang::SourceLocation InsertLoc = SM.getLocForStartOfFile(MainFileID)
+                                           .getLocWithOffset(LastPreprocessorLine);
+        
+        // 添加额外的换行以保持代码整洁
+        std::string Code = "\n" + MemoryCodeGenerator::generateCompleteProfiler(includes) + "\n";
+        rewriter.InsertText(InsertLoc, Code, true, true);
+    } else {
+        // 如果没有找到预处理指令，则在文件开头插入
+        clang::SourceLocation InsertLoc = SM.getLocForStartOfFile(MainFileID);
+        rewriter.InsertText(InsertLoc, MemoryCodeGenerator::generateCompleteProfiler(includes), true, true);
+    }
+    
     return true;
 }
 

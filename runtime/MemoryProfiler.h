@@ -4,29 +4,39 @@
 #include <sstream>
 
 // 内存访问分析代码生成器
-class MemoryCodeGenerator {
+class MemoryCodeGenerator
+{
 public:
     // 常量定义
-    constexpr static unsigned NUM_THREADS = 24;         // MT3000的线程数
-    constexpr static unsigned MAX_PATTERNS = 16;         // 记录的最大访存模式数
-    constexpr static unsigned NAME_SIZE = 64;           // 名称最大长度
-    constexpr static unsigned PATTERN_THRESHOLD = 5;    // 访存模式识别阈值(%)
+    constexpr static unsigned NUM_THREADS = 24;      // MT3000的线程数
+    constexpr static unsigned MAX_PATTERNS = 16;     // 记录的最大访存模式数
+    constexpr static unsigned NAME_SIZE = 64;        // 名称最大长度
+    constexpr static unsigned PATTERN_THRESHOLD = 5; // 访存模式识别阈值(%)
 
     // 生成访存分析的基本数据结构
-    static std::string generateBaseStructures(const std::vector<std::string> &includes) {
+    static std::string generateBaseStructures(const std::vector<std::string> &includes)
+    {
         std::stringstream ss;
 
         // 检查是否需要添加头文件
         bool hasStdio = false;
         bool hasString = false;
+        bool hasHthreadDevice = false;
         for (const auto &inc : includes) {
-            if (inc == "stdio.h") hasStdio = true;
-            if (inc == "string.h") hasString = true;
+            if (inc == "stdio.h")
+                hasStdio = true;
+            if (inc == "string.h")
+                hasString = true;
+            if (inc == "hthread_device.h")
+                hasHthreadDevice = true;
         }
 
-        if (!hasStdio) ss << "#include <stdio.h>\n";
-        if (!hasString) ss << "#include <string.h>\n";
-        ss << "#include \"hthread_device.h\"\n\n";
+        if (!hasStdio)
+            ss << "#include <stdio.h>\n";
+        if (!hasString)
+            ss << "#include <string.h>\n";
+        if (!hasHthreadDevice)
+            ss << "#include \"hthread_device.h\"\n";
 
         // 定义常量
         ss << "#ifndef MEM_PROFILER_DEFS\n"
@@ -55,7 +65,8 @@ public:
     }
 
     // 生成访存分析器的初始化函数
-    static std::string generateInitFunction() {
+    static std::string generateInitFunction()
+    {
         std::stringstream ss;
         ss << "// 初始化访存分析器\n"
            << "static inline void __mem_init(mem_profile_t* prof,\n"
@@ -63,7 +74,6 @@ public:
            << "                             const char* func_name,\n"
            << "                             void* addr,\n"
            << "                             size_t type_size) {\n"
-           << "    int i;\n"
            << "    strncpy(prof->var_name, var_name, MEM_NAME_SIZE-1);\n"
            << "    strncpy(prof->func_name, func_name, MEM_NAME_SIZE-1);\n"
            << "    prof->base_addr = (unsigned long)addr;\n"
@@ -79,7 +89,8 @@ public:
     }
 
     // 生成访存记录函数
-    static std::string generateRecordFunction() {
+    static std::string generateRecordFunction()
+    {
         std::stringstream ss;
         ss << "// 记录一次内存访问\n"
            << "static inline void __mem_record(mem_profile_t* prof, void* addr) {\n"
@@ -87,7 +98,8 @@ public:
            << "    unsigned long curr_addr = (unsigned long)addr;\n"
            << "    \n"
            << "    // 计算归一化访存步长\n"
-           << "    step = (curr_addr - prof->last_addr) < 0 ? (prof->last_addr - curr_addr) : (curr_addr - prof->last_addr);\n"
+           << "    step = (curr_addr - prof->last_addr) < 0 ? (prof->last_addr - curr_addr) : (curr_addr - "
+              "prof->last_addr);\n"
            << "    step /= prof->type_size;\n"
            << "    prof->last_addr = curr_addr;\n"
            << "    prof->end_addr = curr_addr > prof->end_addr ? curr_addr : prof->end_addr;\n"
@@ -112,7 +124,8 @@ public:
     }
 
     // 生成结果分析函数
-    static std::string generateAnalysisFunction() {
+    static std::string generateAnalysisFunction()
+    {
         std::stringstream ss;
         ss << "// 分析访存结果\n"
            << "static inline void __mem_analyze(mem_profile_t* prof) {\n"
@@ -147,27 +160,36 @@ public:
            << "static inline void __mem_print_analysis(mem_profile_t* prof) {\n"
            << "    if(prof->total_accesses == 0) return;\n"
            << "    \n"
-           << "    hthread_printf(\"[Memory Analysis] %s in %s: elements=%lu, accesses=%lu\\n\", \n"
-           << "                  prof->var_name, prof->func_name, prof->var_size, prof->total_accesses);\n"
+           << "    // 创建输出缓冲区\n"
+           << "    char buffer[512];\n"
+           << "    int offset = 0;\n"
+           << "    \n"
+           << "    // 写入基本信息\n"
+           << "    offset += snprintf(buffer + offset, sizeof(buffer) - offset,\n"
+           << "        \"[Memory Analysis] %s in %s: elements=%lu, accesses=%lu\\n\",\n"
+           << "        prof->var_name, prof->func_name, prof->var_size, prof->total_accesses);\n"
            << "    \n"
            << "    // 输出主要访存模式\n"
            << "    for(int i = 0; i < MEM_TOP_PATTERNS && i < MEM_MAX_PATTERNS; i++) {\n"
            << "        if(prof->pattern_counts[i] > prof->total_accesses * 5 / 100) {\n"
-           << "            hthread_printf(\"  Pattern %d: step=%lu (%.1f%%)\\n\", \n"
-           << "                          i + 1,\n"
-           << "                          prof->patterns[i],\n"
-           << "                          (float)prof->pattern_counts[i] * 100 / prof->total_accesses);\n"
+           << "            offset += snprintf(buffer + offset, sizeof(buffer) - offset,\n"
+           << "                \"  Pattern %d: step=%lu (%.1f%%)\\n\",\n"
+           << "                i + 1,\n"
+           << "                prof->patterns[i],\n"
+           << "                (float)prof->pattern_counts[i] * 100 / prof->total_accesses);\n"
            << "        }\n"
            << "    }\n"
+           << "    \n"
+           << "    // 一次性输出所有内容\n"
+           << "    hthread_printf(\"%s\", buffer);\n"
            << "}\n\n";
         return ss.str();
     }
 
     // 生成完整的访存分析器代码
-    static std::string generateCompleteProfiler(const std::vector<std::string> &includes) {
-        return generateBaseStructures(includes) +
-               generateInitFunction() +
-               generateRecordFunction() +
+    static std::string generateCompleteProfiler(const std::vector<std::string> &includes)
+    {
+        return generateBaseStructures(includes) + generateInitFunction() + generateRecordFunction() +
                generateAnalysisFunction();
     }
 };
