@@ -65,6 +65,8 @@ public:
     // 访问返回语句，插入内存分析代码
     bool VisitReturnStmt(clang::ReturnStmt* RS);
 
+    bool VisitCompoundStmt(clang::CompoundStmt *CS);
+
     // 获取所有函数中已初始化的变量
     const std::unordered_map<std::string, std::unordered_set<std::string>>& getInitializedVars() const {
         return functionInitializedVars;
@@ -77,6 +79,7 @@ private:
     std::unordered_set<std::string> instrumentedVars;
     std::unordered_set<std::string> targetFunctions; // 目标函数集合
     std::string currentFunctionName; // 当前正在访问的函数名
+    clang::FunctionDecl* currentFunctionDecl = nullptr;
     std::unordered_map<std::string, std::vector<std::string>> functionVars; // Track variables per function
     std::unordered_map<std::string, std::unordered_set<std::string>> functionInitializedVars; // Track initialized variables per function
 
