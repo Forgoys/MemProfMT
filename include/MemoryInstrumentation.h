@@ -1,35 +1,31 @@
 #ifndef MEMORY_INSTRUMENTATION_H
 #define MEMORY_INSTRUMENTATION_H
 
+#include "../runtime/MemoryProfiler.h"
+#include "CallGraph.h"
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Basic/SourceManager.h"
-#include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Lex/Lexer.h"
-#include "../runtime/MemoryProfiler.h"
-#include "CallGraph.h"
-#include <unordered_set>
+#include "clang/Rewrite/Core/Rewriter.h"
 #include <clang/AST/ParentMap.h>
+#include <unordered_set>
 
 class MemoryInstrumentationVisitor; // 前向声明
 
 // AST访问器，用于遍历和插入内存访问监控代码
-class MemoryInstrumentationVisitor
-        : public clang::RecursiveASTVisitor<MemoryInstrumentationVisitor>
+class MemoryInstrumentationVisitor : public clang::RecursiveASTVisitor<MemoryInstrumentationVisitor>
 {
 public:
     friend class clang::RecursiveASTVisitor<MemoryInstrumentationVisitor>;
 
-    explicit MemoryInstrumentationVisitor(clang::Rewriter &R,
-                                          clang::ASTContext &Context,
+    explicit MemoryInstrumentationVisitor(clang::Rewriter &R, clang::ASTContext &Context,
                                           std::vector<std::string> &includes,
                                           const std::vector<std::string> targetFuncs)
-        : rewriter(R), ctx(Context), includes(includes),
-          targetFunctions(),
-          currentFunctionName("")
+        : rewriter(R), ctx(Context), includes(includes), targetFunctions(), currentFunctionName("")
     {
-        for (const auto& func : targetFuncs) {
+        for (const auto &func : targetFuncs) {
             if (!func.empty()) {
                 targetFunctions.insert(func);
             }
@@ -63,12 +59,13 @@ public:
     bool TraverseFunctionDecl(clang::FunctionDecl *FD);
 
     // 访问返回语句，插入内存分析代码
-    bool VisitReturnStmt(clang::ReturnStmt* RS);
+    bool VisitReturnStmt(clang::ReturnStmt *RS);
 
     bool VisitCompoundStmt(clang::CompoundStmt *CS);
 
     // 获取所有函数中已初始化的变量
-    const std::unordered_map<std::string, std::unordered_set<std::string>>& getInitializedVars() const {
+    const std::unordered_map<std::string, std::unordered_set<std::string>> &getInitializedVars() const
+    {
         return functionInitializedVars;
     }
 
@@ -78,10 +75,11 @@ private:
     std::vector<std::string> &includes;
     std::unordered_set<std::string> instrumentedVars;
     std::unordered_set<std::string> targetFunctions; // 目标函数集合
-    std::string currentFunctionName; // 当前正在访问的函数名
-    clang::FunctionDecl* currentFunctionDecl = nullptr;
+    std::string currentFunctionName;                 // 当前正在访问的函数名
+    clang::FunctionDecl *currentFunctionDecl = nullptr;
     std::unordered_map<std::string, std::vector<std::string>> functionVars; // Track variables per function
-    std::unordered_map<std::string, std::unordered_set<std::string>> functionInitializedVars; // Track initialized variables per function
+    std::unordered_map<std::string, std::unordered_set<std::string>>
+        functionInitializedVars; // Track initialized variables per function
 
     // 获取表达式的源代码
     std::string getSourceText(const clang::Stmt *stmt) const;
@@ -104,7 +102,11 @@ private:
     // 检查代码位置是否在主文件中
     bool isInMainFile(clang::SourceLocation Loc) const;
 
-    void insertAnalysisCode(clang::ReturnStmt* RS);
+    void insertAnalysisCode(clang::ReturnStmt *RS);
+
+    // 插入内存访问记录代码
+    bool insertMemoryAccessRecord(const clang::Expr *Expr, const std::string &VarName,
+                                  const std::string &AccessExpr) const;
 
     // 访问数组下标表达式，记录数组访问
     bool handleArraySubscriptExpr(const clang::ArraySubscriptExpr *ASE) const;
@@ -116,23 +118,24 @@ private:
 
     std::string getLine(clang::SourceLocation Loc) const;
 
-    std::string generateAnalysisCode(const std::string& functionName);
+    std::string generateAnalysisCode(const std::string &functionName);
 };
 
 // AST消费者类，用于处理整个翻译单元
-class MemoryInstrumentationConsumer : public clang::ASTConsumer {
+class MemoryInstrumentationConsumer : public clang::ASTConsumer
+{
 private:
     const std::vector<std::string> targetFunctions;
     clang::Rewriter &rewriter;
     std::vector<std::string> &includes;
 
 public:
-    explicit MemoryInstrumentationConsumer(clang::Rewriter &R,
-                                         std::vector<std::string> &includes,
-                                         const std::vector<std::string> &targetFuncs)
-        : targetFunctions(targetFuncs),
-          rewriter(R), includes(includes) {}
-    
+    explicit MemoryInstrumentationConsumer(clang::Rewriter &R, std::vector<std::string> &includes,
+                                           const std::vector<std::string> &targetFuncs)
+        : targetFunctions(targetFuncs), rewriter(R), includes(includes)
+    {
+    }
+
     void HandleTranslationUnit(clang::ASTContext &Context) override;
 };
 

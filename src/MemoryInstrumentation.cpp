@@ -102,11 +102,6 @@ void MemoryInstrumentationVisitor::insertVarProfiler(const clang::VarDecl *VD)
        << "__mem_init(&__" << VarName << "_prof, \"" << VarName << "\", \"" << FuncName << "\", (void*)" << addrExpr
        << ", sizeof(" << VarName << "[0]));\n";
 
-    // 如果是数组类型的变量，直接计算大小，例如，int a[10]; 则 a_prof.var_size = sizeof(a);
-    // if (type->isArrayType()) {
-    //     SS << "__" << VarName << "_prof.var_size = sizeof(" << VarName << ");\n";
-    // }
-
     // 获取变量声明后的正确位置
     clang::SourceLocation InsertLoc;
     if (VD->hasInit()) {
@@ -365,20 +360,21 @@ bool MemoryInstrumentationVisitor::VisitReturnStmt(clang::ReturnStmt *RS)
     return true;
 }
 
-bool  MemoryInstrumentationVisitor::VisitCompoundStmt(clang::CompoundStmt *CS) {
+bool MemoryInstrumentationVisitor::VisitCompoundStmt(clang::CompoundStmt *CS)
+{
     // 只在当前函数需要插桩时处理
-    if (!shouldInstrumentFunction() || currentFunctionDecl->getBody() != CS) 
+    if (!shouldInstrumentFunction() || currentFunctionDecl->getBody() != CS)
         return true;
 
     // 获取函数体的最后一个语句
     if (!CS->body_empty()) {
         clang::Stmt *lastStmt = CS->body_back();
-        
+
         // 如果最后一个语句不是ReturnStmt，则在最后插入分析代码
         if (!llvm::isa<clang::ReturnStmt>(lastStmt)) {
-            clang::SourceLocation endLoc = clang::Lexer::getLocForEndOfToken(
-                lastStmt->getEndLoc(), 0, ctx.getSourceManager(), ctx.getLangOpts());
-            
+            clang::SourceLocation endLoc =
+                clang::Lexer::getLocForEndOfToken(lastStmt->getEndLoc(), 0, ctx.getSourceManager(), ctx.getLangOpts());
+
             // 确保插入位置有效且在函数体内
             if (endLoc.isValid() && ctx.getSourceManager().isInMainFile(endLoc)) {
                 std::string analysisCode = generateAnalysisCode(currentFunctionName);
@@ -389,147 +385,91 @@ bool  MemoryInstrumentationVisitor::VisitCompoundStmt(clang::CompoundStmt *CS) {
     return true;
 }
 
-// bool MemoryInstrumentationVisitor::handleArraySubscriptExpr(const clang::ArraySubscriptExpr *ASE) const
-// {
-//     if (!shouldInstrumentFunction())
-//         return true;
+// 插入内存访问记录代码
+bool MemoryInstrumentationVisitor::insertMemoryAccessRecord(const clang::Expr *Expr, const std::string &VarName,
+                                                            const std::string &AccessExpr) const
+{
 
-//     const clang::Expr *Base = ASE->getBase()->IgnoreImplicit();
-//     if (auto *DRE = llvm::dyn_cast<clang::DeclRefExpr>(Base)) {
-//         std::string ArrayName = DRE->getNameInfo().getAsString();
-//         if (!instrumentedVars.count(ArrayName))
-//             return true;
+    if (!shouldInstrumentFunction() || !Expr)
+        return true;
 
-//         clang::SourceLocation EndLoc = ASE->getEndLoc();
-//         if (EndLoc.isInvalid())
-//             return true;
-//         const clang::SourceManager &SM = ctx.getSourceManager();
-//         unsigned currentLine = SM.getExpansionLineNumber(EndLoc);
-//         clang::SourceLocation newLineStart = SM.translateLineCol(SM.getFileID(EndLoc), currentLine + 1, 1);
+    if (!instrumentedVars.count(VarName))
+        return true;
 
-//         unsigned indent = getIndentation(ASE->getBeginLoc());
-//         std::string indentStr(indent, ' ');
+    // 找到包含此表达式的最内层语句
+    const clang::Stmt *ContainingStmt = Expr;
+    const auto &SM = ctx.getSourceManager();
 
-//         std::string stmtText = getSourceText(ASE);
-//         std::string RecordCode = indentStr + "__mem_record(&__" + ArrayName + "_prof, (void*)&(" + stmtText + "));\n";
+    // 向上查找直到找到一个完整的语句
+    while (true) {
+        const auto &parents = ctx.getParentMapContext().getParents(*ContainingStmt);
+        if (parents.empty())
+            break;
 
-//         rewriter.InsertText(newLineStart, RecordCode, true, false);
-//     }
-//     return true;
-// }
+        const clang::Stmt *Parent = parents[0].get<clang::Stmt>();
+        if (!Parent)
+            break;
 
-// bool MemoryInstrumentationVisitor::handleUnaryOperator(const clang::UnaryOperator *UO) const
-// {
-//     if (!shouldInstrumentFunction() || UO->getOpcode() != clang::UO_Deref)
-//         return true;
+        // 检查是否找到了一个完整的语句
+        if (llvm::isa<clang::CompoundStmt>(Parent) || llvm::isa<clang::IfStmt>(Parent) ||
+            llvm::isa<clang::ForStmt>(Parent) || llvm::isa<clang::WhileStmt>(Parent) ||
+            llvm::isa<clang::DoStmt>(Parent) || llvm::isa<clang::SwitchStmt>(Parent)) {
+            break;
+        }
 
-//     if (auto *Base = UO->getSubExpr()) {
-//         const clang::DeclRefExpr *DRE = nullptr;
-//         const clang::Expr *E = Base->IgnoreParenImpCasts();
+        ContainingStmt = Parent;
+    }
 
-//         // 递归查找DeclRefExpr
-//         while (E) {
-//             if ((DRE = llvm::dyn_cast<clang::DeclRefExpr>(E))) {
-//                 break;
-//             }
-//             if (const auto *BO = llvm::dyn_cast<clang::BinaryOperator>(E)) {
-//                 E = BO->getLHS()->IgnoreParenImpCasts();
-//             } else {
-//                 break;
-//             }
-//         }
+    // 获取语句的结束位置
+    clang::SourceLocation StmtEndLoc = ContainingStmt->getEndLoc();
+    if (!StmtEndLoc.isValid() || !isInMainFile(StmtEndLoc))
+        return true;
 
-//         if (DRE && instrumentedVars.count(DRE->getNameInfo().getAsString())) {
-//             std::string PtrName = DRE->getNameInfo().getAsString();
-//             std::string stmtText = getSourceText(Base);
-//             std::string RecordCode = "__mem_record(&__" + PtrName + "_prof, (void*)(" + stmtText + "));\n";
-//             rewriter.InsertText(UO->getBeginLoc(), RecordCode, false, true);
-//         }
-//     }
-//     return true;
-// }
+    // 找到语句真正的结束位置（包括分号）
+    clang::SourceLocation AfterSemiLoc =
+        clang::Lexer::findLocationAfterToken(StmtEndLoc, clang::tok::semi, SM, ctx.getLangOpts(),
+                                             /*SkipTrailingWhitespaceAndNewLine=*/false);
 
-bool MemoryInstrumentationVisitor::handleArraySubscriptExpr(const clang::ArraySubscriptExpr *ASE) const {
-    if (!shouldInstrumentFunction())
+    // 如果找不到分号（可能是复合语句），使用原始结束位置
+    clang::SourceLocation InsertLoc = AfterSemiLoc.isValid() ? AfterSemiLoc : StmtEndLoc;
+
+    // 对于多行语句，确保我们在正确的行
+    if (InsertLoc.isValid() && isInMainFile(InsertLoc)) {
+        // 获取适当的缩进
+        unsigned indent = getIndentation(ContainingStmt->getBeginLoc());
+        std::string indentStr(indent, ' ');
+
+        // 生成记录代码
+        std::string RecordCode =
+            "\n" + indentStr + "__mem_record(&__" + VarName + "_prof, (void*)&(" + AccessExpr + "));";
+
+        rewriter.InsertText(InsertLoc, RecordCode, /*InsertAfter=*/true);
+        return true;
+    }
+
+    return false;
+}
+
+// 数组下标访问
+bool MemoryInstrumentationVisitor::handleArraySubscriptExpr(const clang::ArraySubscriptExpr *ASE) const
+{
+    if (!ASE)
         return true;
 
     const clang::Expr *Base = ASE->getBase()->IgnoreImplicit();
     if (auto *DRE = llvm::dyn_cast<clang::DeclRefExpr>(Base)) {
         std::string ArrayName = DRE->getNameInfo().getAsString();
-        if (!instrumentedVars.count(ArrayName))
-            return true;
+        std::string AccessExpr = getSourceText(ASE);
 
-        // 找到包含当前表达式的完整语句
-        const auto &parents = ctx.getParentMapContext().getParents(*ASE);
-        if (parents.empty()) return true;
-
-        // 遍历父节点直到找到一个BinaryOperator或CompoundAssignOperator
-        const clang::Stmt *Parent = parents[0].get<clang::Stmt>();
-        if (!Parent) return true;
-
-        const clang::BinaryOperator *BO = nullptr;
-        const clang::CompoundAssignOperator *CAO = nullptr;
-
-        while (Parent) {
-            if ((BO = llvm::dyn_cast<clang::BinaryOperator>(Parent))) {
-                if (BO->isAssignmentOp()) break;
-            } else if ((CAO = llvm::dyn_cast<clang::CompoundAssignOperator>(Parent))) {
-                break;
-            }
-            
-            const auto &nextParents = ctx.getParentMapContext().getParents(*Parent);
-            if (nextParents.empty()) break;
-            
-            const clang::Stmt *nextParent = nextParents[0].get<clang::Stmt>();
-            if (!nextParent) break;
-            Parent = nextParent;
-        }
-
-        // 如果找不到赋值操作，就尝试找到包含的复合语句
-        if (!BO && !CAO) {
-            Parent = parents[0].get<clang::Stmt>();
-            while (Parent) {
-                if (llvm::isa<clang::CompoundStmt>(Parent)) {
-                    break;
-                }
-                const auto &nextParents = ctx.getParentMapContext().getParents(*Parent);
-                if (nextParents.empty()) break;
-                
-                const clang::Stmt *nextParent = nextParents[0].get<clang::Stmt>();
-                if (!nextParent) break;
-                Parent = nextParent;
-            }
-        }
-
-        if (!Parent) return true;
-
-        // 获取最佳插入位置
-        clang::SourceLocation InsertLoc;
-        if (BO || CAO) {
-            // 对于赋值语句，在整个赋值语句之前插入
-            InsertLoc = (BO ? BO->getBeginLoc() : CAO->getBeginLoc());
-        } else {
-            // 否则使用表达式的位置
-            InsertLoc = ASE->getBeginLoc();
-        }
-        
-        if (InsertLoc.isInvalid() || !isInMainFile(InsertLoc))
-            return true;
-
-        unsigned indent = getIndentation(InsertLoc);
-        std::string indentStr(indent, ' ');
-
-        std::string stmtText = getSourceText(ASE);
-        std::string RecordCode = indentStr + "__mem_record(&__" + ArrayName + "_prof, (void*)&(" + stmtText + "));\n";
-
-        // 在合适的位置插入内存记录代码
-        rewriter.InsertText(InsertLoc, RecordCode, true, true);
+        return insertMemoryAccessRecord(ASE, ArrayName, AccessExpr);
     }
     return true;
 }
 
-bool MemoryInstrumentationVisitor::handleUnaryOperator(const clang::UnaryOperator *UO) const {
-    if (!shouldInstrumentFunction() || UO->getOpcode() != clang::UO_Deref)
+// 指针解引用
+bool MemoryInstrumentationVisitor::handleUnaryOperator(const clang::UnaryOperator *UO) const
+{
+    if (!UO || UO->getOpcode() != clang::UO_Deref)
         return true;
 
     if (auto *Base = UO->getSubExpr()) {
@@ -548,43 +488,12 @@ bool MemoryInstrumentationVisitor::handleUnaryOperator(const clang::UnaryOperato
             }
         }
 
-        if (!DRE || !instrumentedVars.count(DRE->getNameInfo().getAsString()))
-            return true;
+        if (DRE) {
+            std::string PtrName = DRE->getNameInfo().getAsString();
+            std::string AccessExpr = getSourceText(Base);
 
-        // 找到包含当前表达式的赋值语句
-        const auto &parents = ctx.getParentMapContext().getParents(*UO);
-        if (parents.empty()) return true;
-
-        const clang::Stmt *Parent = parents[0].get<clang::Stmt>();
-        if (!Parent) return true;
-
-        const clang::BinaryOperator *BO = nullptr;
-        while (Parent) {
-            if ((BO = llvm::dyn_cast<clang::BinaryOperator>(Parent))) {
-                if (BO->isAssignmentOp()) break;
-            }
-            
-            const auto &nextParents = ctx.getParentMapContext().getParents(*Parent);
-            if (nextParents.empty()) break;
-            
-            const clang::Stmt *nextParent = nextParents[0].get<clang::Stmt>();
-            if (!nextParent) break;
-            Parent = nextParent;
+            return insertMemoryAccessRecord(UO, PtrName, AccessExpr);
         }
-
-        clang::SourceLocation InsertLoc = BO ? BO->getBeginLoc() : UO->getBeginLoc();
-        if (InsertLoc.isInvalid() || !isInMainFile(InsertLoc))
-            return true;
-
-        unsigned indent = getIndentation(InsertLoc);
-        std::string indentStr(indent, ' ');
-
-        std::string PtrName = DRE->getNameInfo().getAsString();
-        std::string stmtText = getSourceText(Base);
-        std::string RecordCode = indentStr + "__mem_record(&__" + PtrName + "_prof, (void*)(" + stmtText + "));\n";
-
-        // 在赋值语句前插入内存记录代码
-        rewriter.InsertText(InsertLoc, RecordCode, true, true);
     }
     return true;
 }
