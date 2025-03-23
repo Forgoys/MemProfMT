@@ -7,7 +7,8 @@
 #include "clang/Lex/PPCallbacks.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Tooling/Tooling.h"
-#include "TimeInstrumentation.h"
+#include "clang/Rewrite/Core/Rewriter.h"
+#include "clang/Frontend/FrontendAction.h"
 #include <memory>
 
 using namespace clang;

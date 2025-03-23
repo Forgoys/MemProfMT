@@ -40,7 +40,6 @@ TOOL_LINK_FLAGS := -L$(LLVM_HOME)/lib -Wl,-rpath,$(LLVM_HOME)/lib $(LLVM_LDFLAGS
 
 # 源文件和目标文件
 SRCS := $(SRC_DIR)/CallGraph.cpp \
-        $(SRC_DIR)/TimeInstrumentation.cpp \
         $(SRC_DIR)/MemoryInstrumentation.cpp \
         $(SRC_DIR)/main.cpp \
         $(SRC_DIR)/FrontendAction.cpp \

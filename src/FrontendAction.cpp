@@ -10,7 +10,6 @@
 #include <MemoryInstrumentation.h>
 
 #include "../include/CommandLineOptions.h"
-#include "../include/TimeInstrumentation.h"
 #include "../include/MemoryInstrumentation.h"
 
 std::unique_ptr<clang::ASTConsumer> InstrumentationFrontendAction::CreateASTConsumer(
@@ -27,15 +26,8 @@ std::unique_ptr<clang::ASTConsumer> InstrumentationFrontendAction::CreateASTCons
             llvm::outs() << "  - " << func << "\n";
         }
     }
-
-    if (EnableTimeInst) {
-        return std::make_unique<TimeInstrumentationConsumer>(rewriter, includes);
-    } else if (EnableMemoryInst) {
-        return std::make_unique<MemoryInstrumentationConsumer>(rewriter, includes, targetFuncs);
-    }
-
-    llvm::errs() << "Error: No instrumentation type selected.\n";
-    return nullptr;
+    
+    return std::make_unique<MemoryInstrumentationConsumer>(rewriter, includes, targetFuncs);
 }
 
 bool InstrumentationFrontendAction::BeginSourceFileAction(clang::CompilerInstance &CI) {
@@ -63,7 +55,8 @@ void InstrumentationFrontendAction::EndSourceFileAction() {
         
         // 根据插桩类型选择合适的前缀
         // EnableTimeInst 在 CommandLineOptions.h 中定义
-        std::string prefix = EnableTimeInst ? "time_prof_" : "mem_prof_";
+        // std::string prefix = EnableTimeInst ? "time_prof_" : "mem_prof_";
+        std::string prefix =  "mem_prof_";
         
         // 组合目录路径、前缀和文件名，构造完整的输出路径
         llvm::SmallString<128> outputPath(directory);
