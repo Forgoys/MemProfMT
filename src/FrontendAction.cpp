@@ -53,9 +53,6 @@ void InstrumentationFrontendAction::EndSourceFileAction() {
         llvm::SmallString<128> directory(llvm::sys::path::parent_path(inputFullPath));
         llvm::StringRef filename = llvm::sys::path::filename(inputFullPath);
         
-        // 根据插桩类型选择合适的前缀
-        // EnableTimeInst 在 CommandLineOptions.h 中定义
-        // std::string prefix = EnableTimeInst ? "time_prof_" : "mem_prof_";
         std::string prefix =  "mem_prof_";
         
         // 组合目录路径、前缀和文件名，构造完整的输出路径

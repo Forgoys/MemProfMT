@@ -161,27 +161,9 @@ bool MemoryInstrumentationVisitor::insertAccessProfiler(const clang::Expr *E) co
 
     if (auto ASE = llvm::dyn_cast<clang::ArraySubscriptExpr>(E)) {
         // 数组访问
-        // if (auto *Base = ASE->getBase()) {
-        //     if (auto *DRE = llvm::dyn_cast<clang::DeclRefExpr>(
-        //             Base->IgnoreImpCasts())) {
-        //         VarName = DRE->getNameInfo().getAsString();
-        //         AccessExpr = getSourceText(ASE);
-        //         InsertLoc = ASE->getBeginLoc();
-        //     }
-        // }
         return handleArraySubscriptExpr(ASE);
     } else if (auto *UO = llvm::dyn_cast<clang::UnaryOperator>(E)) {
         // 指针解引用
-        // if (UO->getOpcode() == clang::UO_Deref) {
-        //     if (auto *SubExpr = UO->getSubExpr()) {
-        //         if (auto *DRE = llvm::dyn_cast<clang::DeclRefExpr>(
-        //                 SubExpr->IgnoreImpCasts())) {
-        //             VarName = DRE->getNameInfo().getAsString();
-        //             AccessExpr = getSourceText(UO);
-        //             InsertLoc = UO->getBeginLoc();
-        //         }
-        //     }
-        // }
         return handleUnaryOperator(UO);
     } else if (auto *ME = llvm::dyn_cast<clang::MemberExpr>(E)) {
         // 结构体成员访问

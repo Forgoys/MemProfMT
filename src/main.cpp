@@ -20,28 +20,9 @@ int main(int argc, const char **argv)
     CommonOptionsParser &OptionsParser = ExpectedParser.get();
     ClangTool Tool(OptionsParser.getCompilations(), OptionsParser.getSourcePathList());
 
-    // 检查是否指定了任何插桩类型
-    // if (!EnableTimeInst && !EnableMemoryInst) {
-    //     llvm::errs() << "Error: Must specify at least one instrumentation type "
-    //                  << "(-time-inst or -memory-inst)\n";
-    //     return 1;
-    // }
-
-    // 检查是否同时指定了多个插桩类型
-    // if (EnableTimeInst && EnableMemoryInst) {
-    //     llvm::errs() << "Error: Cannot enable both time and memory instrumentation simultaneously\n";
-    //     return 1;
-    // }
-
     // 打印工具信息和配置
     llvm::outs() << "MT-3000 Source Code Instrumentation Tool\n";
     llvm::outs() << "======================================\n";
-    // if (EnableTimeInst) {
-    // llvm::outs() << "Mode: Time Instrumentation\n";
-    // llvm::outs() << "Settings:\n";
-    // llvm::outs() << "  - Total Time Threshold: " << TotalTimeThreshold << "%\n";
-    // llvm::outs() << "  - Parent Time Threshold: " << ParentTimeThreshold << "%\n";
-    // } else {
     llvm::outs() << "Mode: Memory Access Instrumentation\n";
     if (!TargetFunctions.empty()) {
         llvm::outs() << "Target Functions:\n";
