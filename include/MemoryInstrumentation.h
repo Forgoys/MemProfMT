@@ -2,7 +2,6 @@
 #define MEMORY_INSTRUMENTATION_H
 
 #include "../runtime/MemoryProfiler.h"
-#include "CallGraph.h"
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/RecursiveASTVisitor.h"
