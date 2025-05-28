@@ -41,13 +41,12 @@ make
 ### 基本命令
 
 ```bash
-./bin/MemProfMT -memory-inst input.c -o instrumented_output.c
+./bin/MemProfMT input.c -o instrumented_output.c
 ```
 
 ### 内存插桩选项
 
 ```bash
--memory-inst            # 启用内存访问插桩
 -target-funcs          # 指定目标函数（逗号分隔）
 -o <filename>          # 指定输出文件名
 --                     # 编译器选项分隔符

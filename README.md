@@ -41,13 +41,12 @@ make
 ### Basic Commands
 
 ```bash
-./bin/MemProfMT -memory-inst input.c -o instrumented_output.c
+./bin/MemProfMT input.c -o instrumented_output.c
 ```
 
 ### Memory Instrumentation Options
 
 ```bash
--memory-inst            # Enable memory access instrumentation
 -target-funcs          # Specify target functions (comma-separated)
 -o <filename>          # Specify output filename
 --                     # Separator for compiler options
