@@ -113,6 +113,15 @@ private:
     // 访问一元运算符，处理指针解引用
     bool handleUnaryOperator(const clang::UnaryOperator *UO) const;
 
+    // 检查表达式是否在控制流语句的条件/初始化部分（通用解决方案）
+    bool isInControlFlowCondition(const clang::Expr *E) const;
+
+    // 检查表达式是否在指定的AST子树中
+    bool isExpressionInSubtree(const clang::Expr *expr, const clang::Stmt *subtreeRoot) const;
+
+    // 找到合适的插入位置（控制流语句之前的位置）
+    clang::SourceLocation findAppropriateInsertLocation(const clang::Expr *E) const;
+
     unsigned getIndentation(clang::SourceLocation Loc) const;
 
     std::string getLine(clang::SourceLocation Loc) const;

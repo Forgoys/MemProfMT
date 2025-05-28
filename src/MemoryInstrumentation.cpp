@@ -4,6 +4,7 @@
 #include "clang/AST/ParentMapContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Stmt.h"
+#include "clang/AST/ASTTypeTraits.h"
 #include <functional>
 #include <sstream>
 #include <string>
@@ -284,7 +285,7 @@ bool MemoryInstrumentationVisitor::isInMainFile(clang::SourceLocation Loc) const
 
 bool MemoryInstrumentationVisitor::TraverseFunctionDecl(clang::FunctionDecl *FD)
 {
-    if (!FD || !FD->hasBody() || !shouldInstrumentFunction()) {
+    if (!FD || !FD->hasBody()) {
         return clang::RecursiveASTVisitor<MemoryInstrumentationVisitor>::TraverseFunctionDecl(FD);
     }
 
@@ -294,7 +295,9 @@ bool MemoryInstrumentationVisitor::TraverseFunctionDecl(clang::FunctionDecl *FD)
     currentFunctionDecl = FD;
 
     // 清空之前函数的变量
-    functionVars[currentFunctionName].clear();
+    if (shouldInstrumentFunction()) {
+        functionVars[currentFunctionName].clear();
+    }
 
     // 正常遍历函数
     bool result = clang::RecursiveASTVisitor<MemoryInstrumentationVisitor>::TraverseFunctionDecl(FD);
@@ -345,7 +348,7 @@ bool MemoryInstrumentationVisitor::VisitReturnStmt(clang::ReturnStmt *RS)
 bool MemoryInstrumentationVisitor::VisitCompoundStmt(clang::CompoundStmt *CS)
 {
     // 只在当前函数需要插桩时处理
-    if (!shouldInstrumentFunction() || currentFunctionDecl->getBody() != CS)
+    if (!shouldInstrumentFunction() || !currentFunctionDecl || currentFunctionDecl->getBody() != CS)
         return true;
 
     // 获取函数体的最后一个语句
@@ -367,66 +370,246 @@ bool MemoryInstrumentationVisitor::VisitCompoundStmt(clang::CompoundStmt *CS)
     return true;
 }
 
+// 检查表达式是否在指定的AST子树中
+bool MemoryInstrumentationVisitor::isExpressionInSubtree(const clang::Expr *expr, const clang::Stmt *subtreeRoot) const
+{
+    if (!expr || !subtreeRoot)
+        return false;
+        
+    // 如果表达式就是子树根节点
+    if (expr == subtreeRoot)
+        return true;
+        
+    // 使用 DynTypedNode 进行遍历
+    clang::DynTypedNode current = clang::DynTypedNode::create(*expr);
+    
+    while (true) {
+        const auto &parents = ctx.getParentMapContext().getParents(current);
+        if (parents.empty())
+            break;
+            
+        current = parents[0];
+        const clang::Stmt *parentStmt = current.get<clang::Stmt>();
+        
+        if (parentStmt == subtreeRoot) {
+            return true;
+        }
+        
+        // 如果遇到其他控制流语句，停止查找
+        if (parentStmt && (llvm::isa<clang::ForStmt>(parentStmt) ||
+                          llvm::isa<clang::WhileStmt>(parentStmt) ||
+                          llvm::isa<clang::DoStmt>(parentStmt) ||
+                          llvm::isa<clang::IfStmt>(parentStmt) ||
+                          llvm::isa<clang::SwitchStmt>(parentStmt))) {
+            if (parentStmt != subtreeRoot) {
+                break;
+            }
+        }
+    }
+    
+    return false;
+}
+
+// 检查表达式是否在控制流语句的条件/初始化部分（通用解决方案）
+bool MemoryInstrumentationVisitor::isInControlFlowCondition(const clang::Expr *E) const
+{
+    // 使用 DynTypedNode 来处理 Stmt 和 Decl 的混合结构
+    clang::DynTypedNode current = clang::DynTypedNode::create(*E);
+    
+    while (true) {
+        const auto &parents = ctx.getParentMapContext().getParents(current);
+        if (parents.empty())
+            break;
+            
+        current = parents[0];
+        
+        // 尝试获取 Stmt 类型的父节点
+        const clang::Stmt *parentStmt = current.get<clang::Stmt>();
+        if (!parentStmt) {
+            // 如果不是 Stmt，继续向上查找
+            continue;
+        }
+            
+        // 检查各种控制流语句的条件部分
+        if (const auto *forStmt = llvm::dyn_cast<clang::ForStmt>(parentStmt)) {
+            // 检查是否在 init、cond 或 inc 的子树中
+            if (isExpressionInSubtree(E, forStmt->getInit()) ||
+                isExpressionInSubtree(E, forStmt->getCond()) ||
+                isExpressionInSubtree(E, forStmt->getInc())) {
+                return true;
+            }
+            if (isExpressionInSubtree(E, forStmt->getBody())) {
+                break;
+            }
+        } else if (const auto *whileStmt = llvm::dyn_cast<clang::WhileStmt>(parentStmt)) {
+            // while循环的条件部分
+            if (isExpressionInSubtree(E, whileStmt->getCond())) {
+                return true;
+            }
+            if (isExpressionInSubtree(E, whileStmt->getBody())) {
+                break;
+            }
+        } else if (const auto *doStmt = llvm::dyn_cast<clang::DoStmt>(parentStmt)) {
+            // do-while循环的条件部分
+            if (isExpressionInSubtree(E, doStmt->getCond())) {
+                return true;
+            }
+            if (isExpressionInSubtree(E, doStmt->getBody())) {
+                break;
+            }
+        } else if (const auto *ifStmt = llvm::dyn_cast<clang::IfStmt>(parentStmt)) {
+            // if语句的条件部分
+            if (isExpressionInSubtree(E, ifStmt->getCond())) {
+                return true;
+            }
+            if (isExpressionInSubtree(E, ifStmt->getThen()) || 
+                isExpressionInSubtree(E, ifStmt->getElse())) {
+                break;
+            }
+        } else if (const auto *switchStmt = llvm::dyn_cast<clang::SwitchStmt>(parentStmt)) {
+            // switch语句的条件部分
+            if (isExpressionInSubtree(E, switchStmt->getCond())) {
+                return true;
+            }
+            if (isExpressionInSubtree(E, switchStmt->getBody())) {
+                break;
+            }
+        } else if (const auto *caseStmt = llvm::dyn_cast<clang::CaseStmt>(parentStmt)) {
+            // case语句的值部分
+            if (isExpressionInSubtree(E, caseStmt->getLHS()) || 
+                isExpressionInSubtree(E, caseStmt->getRHS())) {
+                return true;
+            }
+            if (isExpressionInSubtree(E, caseStmt->getSubStmt())) {
+                break;
+            }
+        } else if (llvm::isa<clang::CompoundStmt>(parentStmt)) {
+            // 到达复合语句，说明表达式在语句体内，不在条件部分
+            break;
+        }
+    }
+    
+    return false;
+}
+
+// 找到合适的插入位置（控制流语句之前的位置）
+clang::SourceLocation MemoryInstrumentationVisitor::findAppropriateInsertLocation(const clang::Expr *E) const
+{
+    // 使用与isInControlFlowCondition相同的DynTypedNode遍历方法
+    clang::DynTypedNode current = clang::DynTypedNode::create(*E);
+    const clang::Stmt *controlFlowStmt = nullptr;
+    
+    while (true) {
+        const auto &parents = ctx.getParentMapContext().getParents(current);
+        if (parents.empty())
+            break;
+            
+        current = parents[0];
+        
+        // 尝试获取 Stmt 类型的父节点
+        const clang::Stmt *parentStmt = current.get<clang::Stmt>();
+        if (!parentStmt) {
+            // 如果不是 Stmt，继续向上查找
+            continue;
+        }
+        
+        // 检查是否是控制流语句
+        if (llvm::isa<clang::ForStmt>(parentStmt) || 
+            llvm::isa<clang::WhileStmt>(parentStmt) ||
+            llvm::isa<clang::DoStmt>(parentStmt) ||
+            llvm::isa<clang::IfStmt>(parentStmt) ||
+            llvm::isa<clang::SwitchStmt>(parentStmt)) {
+            controlFlowStmt = parentStmt;
+        }
+        
+        // 如果到达复合语句，检查是否找到了控制流语句
+        if (llvm::isa<clang::CompoundStmt>(parentStmt) && controlFlowStmt) {
+            // 返回控制流语句的开始位置
+            return controlFlowStmt->getBeginLoc();
+        }
+    }
+    
+    return clang::SourceLocation(); // 无效位置
+}
+
 // 插入内存访问记录代码
 bool MemoryInstrumentationVisitor::insertMemoryAccessRecord(const clang::Expr *Expr, const std::string &VarName,
                                                             const std::string &AccessExpr) const
 {
-
     if (!shouldInstrumentFunction() || !Expr)
         return true;
 
     if (!instrumentedVars.count(VarName))
         return true;
 
-    // 找到包含此表达式的最内层语句
-    const clang::Stmt *ContainingStmt = Expr;
     const auto &SM = ctx.getSourceManager();
+    
+    // 检查表达式是否在控制流语句的条件部分
+    if (isInControlFlowCondition(Expr)) {
+        // 如果在控制流条件部分，将记录代码插入到控制流语句之前
+        clang::SourceLocation insertLoc = findAppropriateInsertLocation(Expr);
+        if (insertLoc.isValid() && isInMainFile(insertLoc)) {
+            // 获取适当的缩进
+            unsigned indent = getIndentation(insertLoc);
+            std::string indentStr(indent, ' ');
+            
+            // 生成记录代码，插入到控制流语句之前
+            std::string RecordCode = indentStr + "__mem_record(&__" + VarName + "_prof, (void*)&(" + AccessExpr + "));\n";
+            
+            rewriter.InsertText(insertLoc, RecordCode, /*InsertAfter=*/false);
+            return true;
+        }
+    } else {
+        // 如果不在控制流条件部分，使用原来的逻辑
+        // 找到包含此表达式的最内层语句
+        const clang::Stmt *ContainingStmt = Expr;
 
-    // 向上查找直到找到一个完整的语句
-    while (true) {
-        const auto &parents = ctx.getParentMapContext().getParents(*ContainingStmt);
-        if (parents.empty())
-            break;
+        // 向上查找直到找到一个完整的语句
+        while (true) {
+            const auto &parents = ctx.getParentMapContext().getParents(*ContainingStmt);
+            if (parents.empty())
+                break;
 
-        const clang::Stmt *Parent = parents[0].get<clang::Stmt>();
-        if (!Parent)
-            break;
+            const clang::Stmt *Parent = parents[0].get<clang::Stmt>();
+            if (!Parent)
+                break;
 
-        // 检查是否找到了一个完整的语句
-        if (llvm::isa<clang::CompoundStmt>(Parent) || llvm::isa<clang::IfStmt>(Parent) ||
-            llvm::isa<clang::ForStmt>(Parent) || llvm::isa<clang::WhileStmt>(Parent) ||
-            llvm::isa<clang::DoStmt>(Parent) || llvm::isa<clang::SwitchStmt>(Parent)) {
-            break;
+            // 检查是否找到了一个完整的语句
+            if (llvm::isa<clang::CompoundStmt>(Parent) || llvm::isa<clang::IfStmt>(Parent) ||
+                llvm::isa<clang::ForStmt>(Parent) || llvm::isa<clang::WhileStmt>(Parent) ||
+                llvm::isa<clang::DoStmt>(Parent) || llvm::isa<clang::SwitchStmt>(Parent)) {
+                break;
+            }
+
+            ContainingStmt = Parent;
         }
 
-        ContainingStmt = Parent;
-    }
+        // 获取语句的结束位置
+        clang::SourceLocation StmtEndLoc = ContainingStmt->getEndLoc();
+        if (!StmtEndLoc.isValid() || !isInMainFile(StmtEndLoc))
+            return true;
 
-    // 获取语句的结束位置
-    clang::SourceLocation StmtEndLoc = ContainingStmt->getEndLoc();
-    if (!StmtEndLoc.isValid() || !isInMainFile(StmtEndLoc))
-        return true;
+        // 找到语句真正的结束位置（包括分号）
+        clang::SourceLocation AfterSemiLoc =
+            clang::Lexer::findLocationAfterToken(StmtEndLoc, clang::tok::semi, SM, ctx.getLangOpts(),
+                                                 /*SkipTrailingWhitespaceAndNewLine=*/false);
 
-    // 找到语句真正的结束位置（包括分号）
-    clang::SourceLocation AfterSemiLoc =
-        clang::Lexer::findLocationAfterToken(StmtEndLoc, clang::tok::semi, SM, ctx.getLangOpts(),
-                                             /*SkipTrailingWhitespaceAndNewLine=*/false);
+        // 如果找不到分号（可能是复合语句），使用原始结束位置
+        clang::SourceLocation InsertLoc = AfterSemiLoc.isValid() ? AfterSemiLoc : StmtEndLoc;
 
-    // 如果找不到分号（可能是复合语句），使用原始结束位置
-    clang::SourceLocation InsertLoc = AfterSemiLoc.isValid() ? AfterSemiLoc : StmtEndLoc;
+        // 对于多行语句，确保我们在正确的行
+        if (InsertLoc.isValid() && isInMainFile(InsertLoc)) {
+            // 获取适当的缩进
+            unsigned indent = getIndentation(ContainingStmt->getBeginLoc());
+            std::string indentStr(indent, ' ');
 
-    // 对于多行语句，确保我们在正确的行
-    if (InsertLoc.isValid() && isInMainFile(InsertLoc)) {
-        // 获取适当的缩进
-        unsigned indent = getIndentation(ContainingStmt->getBeginLoc());
-        std::string indentStr(indent, ' ');
+            // 生成记录代码
+            std::string RecordCode =
+                "\n" + indentStr + "__mem_record(&__" + VarName + "_prof, (void*)&(" + AccessExpr + "));";
 
-        // 生成记录代码
-        std::string RecordCode =
-            "\n" + indentStr + "__mem_record(&__" + VarName + "_prof, (void*)&(" + AccessExpr + "));";
-
-        rewriter.InsertText(InsertLoc, RecordCode, /*InsertAfter=*/true);
-        return true;
+            rewriter.InsertText(InsertLoc, RecordCode, /*InsertAfter=*/true);
+            return true;
+        }
     }
 
     return false;
