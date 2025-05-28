@@ -74,7 +74,7 @@ void InstrumentationFrontendAction::EndSourceFileAction() {
     }
 
     // 获取重写后的代码缓冲区
-    const clang::RewriteBuffer *RewriteBuf = rewriter.getRewriteBufferFor(ID);
+    const llvm::RewriteBuffer *RewriteBuf = rewriter.getRewriteBufferFor(ID);
     if (RewriteBuf) {
         // 将重写后的代码写入文件
         outFile << std::string(RewriteBuf->begin(), RewriteBuf->end());
