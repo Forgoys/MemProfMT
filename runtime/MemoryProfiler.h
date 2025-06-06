@@ -2,6 +2,8 @@
 #define MEMORY_PROFILER_H
 
 #include <sstream>
+#include <vector> 
+#include <string> 
 
 // 内存访问分析代码生成器
 class MemoryCodeGenerator
